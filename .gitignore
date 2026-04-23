@@ -1,0 +1,18 @@
+# Python
+*.pyc
+__pycache__/
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+
+# Medical imaging data (large files, not source code)
+*.nii
+*.nii.gz
+*.mat
+
+# Logs
+*.log
