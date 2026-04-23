@@ -431,7 +431,7 @@ def register_groupwise(
     # Optimizer Setting
     parameterMap['NumberOfResolutions'] = ['4']
     parameterMap['AutomaticParameterEstimation'] = ['true']
-    parameterMap['ASGDParameterEstimationMethod'] = ['AdaptiveStocDisplacementDistributionhasticGradientDescent']
+    parameterMap['ASGDParameterEstimationMethod'] = ['DisplacementDistribution']
     # parameterMap['MaximumNumberOfIterations'] = ['10000', '20000', '30000', '40000']
     # parameterMap['MaximumNumberOfIterations'] = ['20000', '40000', '60000', '80000']
     # parameterMap['MaximumNumberOfIterations'] = ['10000']
@@ -557,7 +557,7 @@ def register_groupwise(
 #     # Optimizer Setting
 #     parameterMap['NumberOfResolutions'] = ['4']
 #     parameterMap['AutomaticParameterEstimation'] = ['true']
-#     parameterMap['ASGDParameterEstimationMethod'] = ['AdaptiveStocDisplacementDistributionhasticGradientDescent']
+#     parameterMap['ASGDParameterEstimationMethod'] = ['DisplacementDistribution']
 #     # parameterMap['MaximumNumberOfIterations'] = ['10000', '20000', '30000', '40000']
 #     # parameterMap['MaximumNumberOfIterations'] = ['20000', '40000', '60000', '80000']
 #     # parameterMap['MaximumNumberOfIterations'] = ['10000']
@@ -1410,7 +1410,7 @@ def step_groupwise_registration(
         clahe4d     = combined14_clahe,
         dp_rbc4d    = combined14_rbc,
         dp_mem4d    = combined14_mem,
-        savedir     = os.path.join(block_dir, "stageE"),
+        savedir     = os.path.join(savedir, "stageE"),
         target_weights=[30],
         index_sets   =[ set(range(14)) ],
         cyclic      = True,
@@ -1427,13 +1427,13 @@ def step_groupwise_registration(
     average_rbc_first = average_4d_image_stack(first_seven_rbc_4d)
     average_rbc_last = average_4d_image_stack(last_seven_rbc_4d)
 
-    first_seven_mem_4d = extract_4d_subregion(res14["resultImage4d"], 0, 7)
-    last_seven_mem_4d = extract_4d_subregion(res14["resultImage4d"], combined14_img.GetSize()[3] - 7, combined14_img.GetSize()[3])
+    first_seven_mem_4d = extract_4d_subregion(res14["resultDpMem4d"], 0, 7)
+    last_seven_mem_4d = extract_4d_subregion(res14["resultDpMem4d"], combined14_img.GetSize()[3] - 7, combined14_img.GetSize()[3])
     average_mem_first = average_4d_image_stack(first_seven_mem_4d)
     average_mem_last = average_4d_image_stack(last_seven_mem_4d)
 
-    first_seven_clahe_4d = extract_4d_subregion(res14["resultImage4d"], 0, 7)
-    last_seven_clahe_4d = extract_4d_subregion(res14["resultImage4d"], combined14_img.GetSize()[3] - 7, combined14_img.GetSize()[3])
+    first_seven_clahe_4d = extract_4d_subregion(res14["resultClahe4d"], 0, 7)
+    last_seven_clahe_4d = extract_4d_subregion(res14["resultClahe4d"], combined14_img.GetSize()[3] - 7, combined14_img.GetSize()[3])
     average_clahe_first = average_4d_image_stack(first_seven_clahe_4d)
     average_clahe_last = average_4d_image_stack(last_seven_clahe_4d)
 
@@ -1488,7 +1488,7 @@ def step_groupwise_registration(
     transfered_last_seven_clahe_output = apply_transformations_in_sequence(last_seven_clahe_4d, Tf, os.path.join(block_dir,"stageD"), TransformationPosition.END)
 
     finalCombinedClahe4d = combine_transformed_and_registered(
-        transfered_first_seven_clahe_output, res142["resultDpMem4d"], 
+        transfered_first_seven_clahe_output, res142["resultClahe4d"],
         index_transfer_range=(0, 7), index_register_range=(1, 3)
     )
 
@@ -1521,11 +1521,7 @@ def step_groupwise_registration(
         "resultDpMem4d":   final_res["resultDpMem4d"],
         "resultClahe4d":   final_res["resultClahe4d"],
         # all transforms in order: [T_block1, T_block2, T_cyclic14or16]
-        "transformations": [
-            *res7_block1["transformations"],
-            *res7_block2["transformations"],
-            final_res["transformations"]
-        ],
+        "transformations": final_res["transformations"],
         "run_flags": run_flags
     }
 
