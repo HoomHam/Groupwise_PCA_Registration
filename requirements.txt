@@ -1,0 +1,7 @@
+SimpleITK>=2.4.0
+antspyx>=0.5.0
+numpy>=1.26.0
+scipy>=1.13.0
+nibabel>=5.2.0
+bm3d>=4.0.0
+scikit-image>=0.22.0
