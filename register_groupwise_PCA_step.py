@@ -9,6 +9,7 @@ import bm3d
 from scipy.ndimage import label
 from skimage import exposure
 from enum import Enum
+from concurrent.futures import ProcessPoolExecutor
 
 save_dir = '/Volumes/Macintosh HD 2/Work/Analysis/2025-05-06_Phantom/T100/reg/5/'
 input_files = '/Volumes/Macintosh HD 2/Work/Analysis/2025-05-06_Phantom/T100/rec/'
@@ -1239,6 +1240,142 @@ def extract_4d_subregion(image_4d, start_time, end_time):
 #     return registration_fourteen_results
 
 
+def _process_seven_block(args: dict) -> dict:
+    # Worker for parallel 7-frame block processing (Stages A-D).
+    # Top-level so it's picklable under macOS spawn.
+    start    = args["start"]
+    end      = args["end"]
+    savedir  = args["savedir"]
+    image4d  = args["image4d"]
+    dp_rbc4d = args["dp_rbc4d"]
+    dp_mem4d = args["dp_mem4d"]
+    clahe4d  = args["clahe4d"]
+
+    block_dir = os.path.join(savedir, str(start))
+    os.makedirs(block_dir, exist_ok=True)
+
+    if start > 0:
+        img_blk = reverse_last_seven_images(image4d)
+        rbc_blk = reverse_last_seven_images(dp_rbc4d)
+        mem_blk = reverse_last_seven_images(dp_mem4d)
+        clh_blk = reverse_last_seven_images(clahe4d)
+    else:
+        img_blk, rbc_blk, mem_blk, clh_blk = image4d, dp_rbc4d, dp_mem4d, clahe4d
+
+    # ── Stage A: register frames 0–3 ──
+    img4 = process_images(img_blk, (0,4))
+    rbc4 = process_images(rbc_blk, (0,4))
+    mem4 = process_images(mem_blk, (0,4))
+    clh4 = process_images(clh_blk, (0,4))
+
+    res4 = orchestrate_registration_workflow(
+        image4d    = img4,
+        clahe4d    = clh4,
+        dp_rbc4d   = rbc4,
+        dp_mem4d   = mem4,
+        savedir    = os.path.join(block_dir, "stageA"),
+        target_weights=[7],
+        index_sets =[ {0,1,2,3} ],
+        cyclic     = False,
+        time_threshold = time_threshold
+    )
+
+    # ── Stage B: rebuild frames 4–6 by inserting average(0–3) ──
+    avg_img = average_4d_image_stack(res4["resultImage4d"])
+    avg_rbc = average_4d_image_stack(res4["resultDpRbc4d"])
+    avg_mem = average_4d_image_stack(res4["resultDpMem4d"])
+    avg_clh = average_4d_image_stack(res4["resultClahe4d"])
+
+    up_img = update_images(img_blk, (4,7), avg_img)
+    up_rbc = update_images(rbc_blk, (4,7), avg_rbc)
+    up_mem = update_images(mem_blk, (4,7), avg_mem)
+    up_clh = update_images(clh_blk, (4,7), avg_clh)
+
+    res43 = orchestrate_registration_workflow(
+        image4d    = up_img,
+        clahe4d    = up_clh,
+        dp_rbc4d   = up_rbc,
+        dp_mem4d   = up_mem,
+        savedir    = os.path.join(block_dir, "stageB"),
+        target_weights=[7],
+        index_sets =[ {0,1,2,3} ],
+        cyclic     = False,
+        time_threshold = time_threshold
+    )
+
+    # ── Stage C: warp back & splice into a 7-frame block ──
+    Ts = res43["transformations"]
+
+    t_img = apply_transformations_in_sequence(
+        res4["resultImage4d"], Ts, os.path.join(block_dir,"stageC"), TransformationPosition.BEGINNING
+    )
+    combined_img = combine_transformed_and_registered(
+        t_img, res43["resultImage4d"],
+        index_transfer_range=(0,4), index_register_range=(1,4)
+    )
+
+    t_rbc = apply_transformations_in_sequence(
+        res4["resultDpRbc4d"], Ts, os.path.join(block_dir,"stageC"), TransformationPosition.BEGINNING
+    )
+    combined_rbc = combine_transformed_and_registered(
+        t_rbc, res43["resultDpRbc4d"],
+        index_transfer_range=(0,4), index_register_range=(1,4)
+    )
+
+    t_mem = apply_transformations_in_sequence(
+        res4["resultDpMem4d"], Ts, os.path.join(block_dir,"stageC"), TransformationPosition.BEGINNING
+    )
+    combined_mem = combine_transformed_and_registered(
+        t_mem, res43["resultDpMem4d"],
+        index_transfer_range=(0,4), index_register_range=(1,4)
+    )
+
+    t_clh = apply_transformations_in_sequence(
+        res4["resultClahe4d"], Ts, os.path.join(block_dir,"stageC"), TransformationPosition.BEGINNING
+    )
+    combined_clh = combine_transformed_and_registered(
+        t_clh, res43["resultClahe4d"],
+        index_transfer_range=(0,4), index_register_range=(1,4)
+    )
+
+    final7_img = process_images(combined_img, (0,7))
+    final7_rbc = process_images(combined_rbc, (0,7))
+    final7_mem = process_images(combined_mem, (0,7))
+    final7_clh = process_images(combined_clh, (0,7))
+
+    # ── Stage D: 7-frame PCA ──
+    res7 = orchestrate_registration_workflow(
+        image4d    = final7_img,
+        clahe4d    = final7_clh,
+        dp_rbc4d   = final7_rbc,
+        dp_mem4d   = final7_mem,
+        savedir    = os.path.join(block_dir, "stageD"),
+        target_weights=[14],
+        index_sets =[ set(range(7)) ],
+        cyclic     = False,
+        time_threshold = time_threshold
+    )
+
+    out_img = res7["resultImage4d"]
+    out_rbc = res7["resultDpRbc4d"]
+    out_mem = res7["resultDpMem4d"]
+    out_clh = res7["resultClahe4d"]
+
+    if start > 0:
+        out_img = resort_to_original_order(out_img)
+        out_rbc = resort_to_original_order(out_rbc)
+        out_mem = resort_to_original_order(out_mem)
+        out_clh = resort_to_original_order(out_clh)
+
+    return {
+        "start":   start,
+        "out_img": out_img,
+        "out_rbc": out_rbc,
+        "out_mem": out_mem,
+        "out_clh": out_clh,
+    }
+
+
 def step_groupwise_registration(
     image4d: sitk.Image,
     dp_rbc4d: sitk.Image,
@@ -1264,134 +1401,35 @@ def step_groupwise_registration(
     first_imgs, first_rbcs, first_mems, first_clhs   = [], [], [], []
     last_imgs,  last_rbcs,  last_mems, last_clhs    = [], [], [], []
 
-    for start, end in blocks:
-        block_dir = os.path.join(savedir, str(start))
-        os.makedirs(block_dir, exist_ok=True)
+    block_args = [
+        {
+            "start":    start,
+            "end":      end,
+            "savedir":  savedir,
+            "image4d":  image4d,
+            "dp_rbc4d": dp_rbc4d,
+            "dp_mem4d": dp_mem4d,
+            "clahe4d":  clahe4d,
+        }
+        for start, end in blocks
+    ]
 
-        # pick the 7‐frame substack (and reverse if it's the “last”)
-        if start > 0:
-            img_blk = reverse_last_seven_images(image4d)
-            rbc_blk = reverse_last_seven_images(dp_rbc4d)
-            mem_blk = reverse_last_seven_images(dp_mem4d)
-            clh_blk  = reverse_last_seven_images(clahe4d)
+    # Run both 7-frame blocks concurrently — they share no mutable state and
+    # write to distinct block_dir subtrees, so process-level isolation is safe.
+    with ProcessPoolExecutor(max_workers=2) as pool:
+        block_results = list(pool.map(_process_seven_block, block_args))
+
+    for r in block_results:
+        if r["start"] > 0:
+            last_imgs.append(r["out_img"])
+            last_rbcs.append(r["out_rbc"])
+            last_mems.append(r["out_mem"])
+            last_clhs.append(r["out_clh"])
         else:
-            img_blk, rbc_blk, mem_blk, clh_blk = image4d, dp_rbc4d, dp_mem4d, clahe4d
-
-        # ── Stage A: register **frames 0–3** ──
-        img4 = process_images(img_blk, (0,4))
-        rbc4 = process_images(rbc_blk, (0,4))
-        mem4 = process_images(mem_blk, (0,4))
-        clh4  = process_images(clh_blk,  (0,4))
-
-        res4 = orchestrate_registration_workflow(
-            image4d    = img4,
-            clahe4d     = clh4,
-            dp_rbc4d    = rbc4,
-            dp_mem4d    = mem4,
-            savedir     = os.path.join(block_dir, "stageA"),
-            target_weights=[7],
-            index_sets   =[ {0,1,2,3} ],
-            cyclic      = False,
-            time_threshold =  time_threshold
-        )
-
-        # ── Stage B: rebuild **frames 4–6** by inserting average(0–3) ──
-        avg_img = average_4d_image_stack(res4["resultImage4d"])
-        avg_rbc = average_4d_image_stack(res4["resultDpRbc4d"])
-        avg_mem = average_4d_image_stack(res4["resultDpMem4d"])
-        avg_clh  = average_4d_image_stack(res4["resultClahe4d"])
-
-        up_img = update_images(img_blk, (4,7), avg_img)
-        up_rbc = update_images(rbc_blk, (4,7), avg_rbc)
-        up_mem = update_images(mem_blk, (4,7), avg_mem)
-        up_clh  = update_images(clh_blk,  (4,7), avg_clh)
-
-        res43 = orchestrate_registration_workflow(
-            image4d    = up_img,
-            clahe4d     = up_clh,
-            dp_rbc4d    = up_rbc,
-            dp_mem4d    = up_mem,
-            savedir     = os.path.join(block_dir, "stageB"),
-            target_weights=[7],
-            index_sets   =[ {0,1,2,3} ],
-            cyclic      = False,
-            time_threshold =  time_threshold
-        )
-
-        # ── Stage C: warp back & **splice** into a 7‑frame block ──
-        Ts = res43["transformations"]
-
-        t_img = apply_transformations_in_sequence(
-            res4["resultImage4d"], Ts, os.path.join(block_dir,"stageC"), TransformationPosition.BEGINNING
-        )
-        combined_img = combine_transformed_and_registered(
-            t_img, res43["resultImage4d"],
-            index_transfer_range=(0,4), index_register_range=(1,4)
-        )
-
-        t_rbc = apply_transformations_in_sequence(
-            res4["resultDpRbc4d"], Ts, os.path.join(block_dir,"stageC"), TransformationPosition.BEGINNING
-        )
-        combined_rbc = combine_transformed_and_registered(
-            t_rbc, res43["resultDpRbc4d"],
-            index_transfer_range=(0,4), index_register_range=(1,4)
-        )
-
-        t_mem = apply_transformations_in_sequence(
-            res4["resultDpMem4d"], Ts, os.path.join(block_dir,"stageC"), TransformationPosition.BEGINNING
-        )
-        combined_mem = combine_transformed_and_registered(
-            t_mem, res43["resultDpMem4d"],
-            index_transfer_range=(0,4), index_register_range=(1,4)
-        )
-
-        t_clh = apply_transformations_in_sequence(
-            res4["resultClahe4d"], Ts, os.path.join(block_dir,"stageC"), TransformationPosition.BEGINNING
-        )
-        combined_clh = combine_transformed_and_registered(
-            t_clh, res43["resultClahe4d"],
-            index_transfer_range=(0,4), index_register_range=(1,4)
-        )
-
-        # now cut back to exactly 7 frames
-        final7_img = process_images(combined_img, (0,7))
-        final7_rbc = process_images(combined_rbc, (0,7))
-        final7_mem = process_images(combined_mem, (0,7))
-        final7_clh  = process_images(combined_clh,  (0,7))
-
-        # ── Stage D: 7‑frame PCA ──
-        res7 = orchestrate_registration_workflow(
-            image4d    = final7_img,
-            clahe4d     = final7_clh,
-            dp_rbc4d    = final7_rbc,
-            dp_mem4d    = final7_mem,
-            savedir     = os.path.join(block_dir, "stageD"),
-            target_weights=[14],
-            index_sets   =[ set(range(7)) ],
-            cyclic      = False,
-            time_threshold =  time_threshold
-        )
-
-        # if it was the “last” block, undo the reverse order:
-        out_img = res7["resultImage4d"]
-        out_rbc = res7["resultDpRbc4d"]
-        out_mem = res7["resultDpMem4d"]
-        out_clh  = res7["resultClahe4d"]
-        
-        if start > 0:
-            out_img = resort_to_original_order(out_img)
-            out_rbc = resort_to_original_order(out_rbc)
-            out_mem = resort_to_original_order(out_mem)
-            out_clh  = resort_to_original_order(out_clh)
-            last_imgs.append(out_img)
-            last_rbcs.append(out_rbc)
-            last_mems.append(out_mem)
-            last_clhs.append(out_clh)
-        else:
-            first_imgs.append(out_img)
-            first_rbcs.append(out_rbc)
-            first_mems.append(out_mem)
-            first_clhs.append(out_clh)
+            first_imgs.append(r["out_img"])
+            first_rbcs.append(r["out_rbc"])
+            first_mems.append(r["out_mem"])
+            first_clhs.append(r["out_clh"])
 
         # --- Merge into a 14‑frame series ---
     combined14_img   = combine_4d_images(first_imgs, last_imgs)                                        
@@ -1436,6 +1474,12 @@ def step_groupwise_registration(
     last_seven_clahe_4d = extract_4d_subregion(res14["resultClahe4d"], combined14_img.GetSize()[3] - 7, combined14_img.GetSize()[3])
     average_clahe_first = average_4d_image_stack(first_seven_clahe_4d)
     average_clahe_last = average_4d_image_stack(last_seven_clahe_4d)
+
+    # Restore the loop-leaked block_dir from the original sequential code
+    # (Stage L and the subsequent transformix applies still write under the
+    # last block's directory; preserved for behavior parity — flagged for
+    # follow-up).
+    block_dir = os.path.join(savedir, str(blocks[-1][0]))
 
     last_up_img = update_images_final(image4d, index_range=(7, 9), average_image_first = average_image_first, average_image_last = average_image_last)
     last_up_rbc = update_images_final(dp_rbc4d, index_range=(7, 9), average_image_first = average_rbc_first, average_image_last = average_rbc_last)
