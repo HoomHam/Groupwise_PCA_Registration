@@ -11,8 +11,8 @@ from skimage import exposure
 from enum import Enum
 from concurrent.futures import ProcessPoolExecutor
 
-save_dir = '/Volumes/Macintosh HD 2/Work/Analysis/2025-05-06_Phantom/T100/reg/5/'
-input_files = '/Volumes/Macintosh HD 2/Work/Analysis/2025-05-06_Phantom/T100/rec/'
+save_dir = '/Users/hoomham/Hooman/Work/Analysis/2024-11-13_025JC/reg/5/'
+input_files = '/Users/hoomham/Hooman/Work/Analysis/2024-11-13_025JC/rec/'
 
 endinhale = 6 
 refno = 6
