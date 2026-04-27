@@ -135,6 +135,27 @@ def read_files(directory):
 #     return images, dp_rbc, dp_mem, clahe_images
 
 # print image sizez for debugging
+def _save_channels(out_dir: str, **channels) -> None:
+    # Write each named channel to out_dir as both .nii (SimpleITK) and .mat
+    # (scipy). MAT axis order matches the input convention: (X,Y,Z,T) for 4D
+    # and (X,Y,Z) for 3D. Skips entries whose value is None.
+    os.makedirs(out_dir, exist_ok=True)
+    for name, img in channels.items():
+        if img is None:
+            continue
+        sitk.WriteImage(img, os.path.join(out_dir, f"{name}.nii"))
+        arr = sitk.GetArrayFromImage(img)
+        if arr.ndim == 4:
+            arr = np.transpose(arr, (3, 2, 1, 0))
+        elif arr.ndim == 3:
+            arr = np.transpose(arr, (2, 1, 0))
+        scipy.io.savemat(
+            os.path.join(out_dir, f"{name}.mat"),
+            {name: arr},
+            do_compression=True,
+        )
+
+
 def print_image_sizes(image_list):
     for i, img in enumerate(image_list):
         size = img.GetSize()
@@ -357,39 +378,30 @@ def register_groupwise(
     image4d, registeror, dp_rbc4d, dp_mem4d, clahe4d, savedir,
     time_threshold, cyclic,
     debug=False,
-    save_flags=(True, True, True)
 ):
     """
-       
-    Single groupwise‐PCA run on 4D image, producing
+    Single groupwise-PCA run on 4D image, producing
     image, mask, registeror, clahe, dp_rbc & dp_mem outputs.
-    
+
     Args:
       image4d: gas-space 4D SITK image
       dp_rbc4d: RBC 4D SITK image
       dp_mem4d: MEM 4D SITK image
-      savedir: output directory
+      savedir: scratch directory for elastix to write logs/transforms into
       time_threshold: time threshold for mask
       cyclic: whether to use cyclic transform
-      debug: if False, suppress all intermediate writes and prints
-      save_flags: tuple of booleans (save_init_mask, save_warped, save_final_mask)
+      debug: if True, also dump the init/final masks alongside elastix logs
     Returns:
-      reg_img, reg_mask, reg_rbc, reg_mem, elastix_filter
+      reg_img, reg_mask, reg_rbc, reg_mem, reg_clahe, elastix_filter
     """
 
     import os
     os.makedirs(savedir, exist_ok=True)
-    save_init_mask, save_warped, save_final_mask = save_flags
 
     # 1) initial mask
     mask = create_mask_from_4d_image(image4d, threshold, time_threshold)
-    if save_init_mask:
-        sitk.WriteImage(mask, os.path.join(savedir, "ns_mask_init.nii"))
-        if debug:
-            print(f"[register_groupwise] wrote initial mask to {savedir}")
-
-    sitk.WriteImage(mask, os.path.join(savedir, "masktest.nii"))
-
+    if debug:
+        sitk.WriteImage(mask, os.path.join(savedir, "_debug_mask_init.nii"))
 
     # 2) Elastix setup
     elastixFilter = sitk.ElastixImageFilter()
@@ -468,33 +480,23 @@ def register_groupwise(
     tx_map = elastixFilter.GetTransformParameterMap()
 
     # helper warp
-    def _warp(vol, name):
-        out = None
+    def _warp(vol):
         tx = sitk.TransformixImageFilter()
         tx.SetMovingImage(vol)
         tx.SetTransformParameterMap(tx_map)
         tx.Execute()
-        out = tx.GetResultImage()
-        if save_warped:
-            sitk.WriteImage(out, os.path.join(savedir, f"ns_{name}_groupwise.nii"))
-            if debug:
-                print(f"[register_groupwise] wrote warped {name} to {savedir}")
-        return out
+        return tx.GetResultImage()
 
-    reg_img = _warp(image4d, "image")
-    # reg_reg = _warp(registeror,"registeror")
-    reg_rbc = _warp(dp_rbc4d, "rbc")
-    reg_mem = _warp(dp_mem4d, "mem")
-    reg_clahe = _warp(clahe4d, "clahe")
+    reg_img   = _warp(image4d)
+    reg_rbc   = _warp(dp_rbc4d)
+    reg_mem   = _warp(dp_mem4d)
+    reg_clahe = _warp(clahe4d)
 
     # 3) final mask
     final_mask = create_mask_from_4d_image(reg_img, threshold, time_threshold)
-    if save_final_mask:
-        sitk.WriteImage(final_mask, os.path.join(savedir, "ns_mask_groupwise.nii"))
-        if debug:
-            print(f"[register_groupwise] wrote final mask to {savedir}")
+    if debug:
+        sitk.WriteImage(final_mask, os.path.join(savedir, "_debug_mask_final.nii"))
 
-    # return reg_img, final_mask, reg_reg, reg_rbc, reg_mem, reg_clahe, elastixFilter
     return reg_img, final_mask, reg_rbc, reg_mem, reg_clahe, elastixFilter
 
 
@@ -635,22 +637,26 @@ def orchestrate_registration_workflow(
     cyclic: bool,
     time_threshold: int,
     run_flags:    tuple[int,int,int,int] = (1,1,1,1),
+    save_intermediate: bool = True,
     debug: bool = False
 ) -> dict:
     """
-    Multi‑stage groupwise PCA registration pipeline.
+    Multi-stage groupwise PCA registration pipeline.
 
     run_flags = (do_enhance, do_denoise, do_clahe, do_image)
+
+    save_intermediate: if True, write the registered (gas/rbc/mem/clahe/mask)
+        result of this call into `savedir` as both .nii and .mat.
+    debug: if True, additionally write the inner sub-stage (0-3) intermediates.
     """
     do_enhance, do_denoise, do_clahe, do_image = run_flags
 
-    def _maybe_write(img: sitk.Image, stage: str, fname: str):
+    def _maybe_write_debug(img: sitk.Image, stage: str, fname: str):
         if debug:
-            outdir = os.path.join(savedir, stage)
+            outdir = os.path.join(savedir, "_debug", stage)
             os.makedirs(outdir, exist_ok=True)
             sitk.WriteImage(img, os.path.join(outdir, fname))
 
-    # Top‑level save dir
     os.makedirs(savedir, exist_ok=True)
 
     #
@@ -658,80 +664,71 @@ def orchestrate_registration_workflow(
     #
     if do_enhance:
         enh = enhance_selected_bins(image4d, index_sets, target_weights)
-        _maybe_write(enh, "stage0", "00-enhanced.nii")
+        _maybe_write_debug(enh, "stage0", "00-enhanced.nii")
         regor0 = enh
     else:
         regor0 = image4d
 
-    stage0 = os.path.join(savedir, "stage0")
-    os.makedirs(stage0, exist_ok=True)
     img0, msk0, rbc0, mem0, clh0, T0 = register_groupwise(
-        image4d, regor0, dp_rbc4d, dp_mem4d, clahe4d, 
-        savedir, time_threshold = 1, cyclic = False
+        image4d, regor0, dp_rbc4d, dp_mem4d, clahe4d,
+        os.path.join(savedir, "_elastix", "stage0"),
+        time_threshold = 1, cyclic = False, debug = debug,
     )
-    _maybe_write(msk0, "stage0", "00-mask.nii")
+    _maybe_write_debug(msk0, "stage0", "00-mask.nii")
 
     #
     # Stage 1: BM3D denoise
     #
     if do_denoise:
         filt = create_bm3d_from_4d_image(img0)
-        _maybe_write(filt, "stage1", "10-filtered.nii")
+        _maybe_write_debug(filt, "stage1", "10-filtered.nii")
         regor1 = filt
     else:
         regor1 = img0
 
-    stage1 = os.path.join(savedir, "stage1")
-    os.makedirs(stage1, exist_ok=True)
     img1, msk1, rbc1, mem1, clh1, T1 = register_groupwise(
         img0, regor1, rbc0, mem0, clh0,
-        stage1, time_threshold = 1, cyclic = False
+        os.path.join(savedir, "_elastix", "stage1"),
+        time_threshold = 1, cyclic = False, debug = debug,
     )
-    _maybe_write(msk1, "stage1", "10-mask.nii")
+    _maybe_write_debug(msk1, "stage1", "10-mask.nii")
 
     #
     # Stage 2: CLAHE
     #
     if do_clahe:
-        _maybe_write(clahe4d, "stage2", "20-clahe-input.nii")
-        sitk.WriteImage(clahe4d, os.path.join(savedir, "clahethatsucks.nii"))
+        _maybe_write_debug(clahe4d, "stage2", "20-clahe-input.nii")
         regor2 = clahe4d
     else:
         regor2 = img1
 
-    stage2 = os.path.join(savedir, "stage2")
-    os.makedirs(stage2, exist_ok=True)
-    print('I Stuck Here!')
     img2, msk2, rbc2, mem2, clh2, T2 = register_groupwise(
         img1, regor2, rbc1, mem1, clh1,
-        stage2, time_threshold = 1, cyclic = False
+        os.path.join(savedir, "_elastix", "stage2"),
+        time_threshold = 1, cyclic = False, debug = debug,
     )
-    _maybe_write(msk2, "stage2", "20-mask.nii")
+    _maybe_write_debug(msk2, "stage2", "20-mask.nii")
 
     #
     # Stage 3: image‑as‑registeror
     #
     regor3 = img2 if do_image else img2
 
-    stage3 = os.path.join(savedir, "stage3")
-    os.makedirs(stage3, exist_ok=True)
     img3, msk3, rbc3, mem3, clh3, T3 = register_groupwise(
         img2, regor3, rbc2, mem2, clh2,
-        stage3, time_threshold = 1, cyclic = False
+        os.path.join(savedir, "_elastix", "stage3"),
+        time_threshold = 1, cyclic = False, debug = debug,
     )
-    _maybe_write(msk3, "stage3", "30-mask.nii")
+    _maybe_write_debug(msk3, "stage3", "30-mask.nii")
 
-    # Final 64‑bit cast & write
     final_img = sitk.Cast(img3, sitk.sitkFloat64)
     final_rbc = sitk.Cast(rbc3, sitk.sitkFloat64)
     final_mem = sitk.Cast(mem3, sitk.sitkFloat64)
     final_clh = sitk.Cast(clh3, sitk.sitkFloat64)
 
-    sitk.WriteImage(final_img, os.path.join(savedir, "final_image.nii"))
-    sitk.WriteImage(final_rbc, os.path.join(savedir, "final_rbc.nii"))
-    sitk.WriteImage(final_mem, os.path.join(savedir, "final_mem.nii"))
-    sitk.WriteImage(final_clh, os.path.join(savedir, "final_clahe.nii"))
-    sitk.WriteImage(msk3,      os.path.join(savedir, "final_mask.nii"))
+    if save_intermediate:
+        _save_channels(savedir,
+            gas=final_img, rbc=final_rbc, mem=final_mem, clahe=final_clh, mask=msk3)
 
     return {
         "resultImage4d":   final_img,
@@ -795,7 +792,7 @@ def average_4d_image_stack(image4d):
     return average_image
 
 
-def apply_transformations_in_sequence(image4d, transformations, savedir, position):
+def apply_transformations_in_sequence(image4d, transformations, savedir, position, debug: bool = False):
     # Ensure transformations are provided in the order: Te, Tn, Tc, Ti
     # if len(transformations) != 4:
     # raise ValueError("Expected four transformation parameter maps: Te, Tn, Tc, Ti")
@@ -866,8 +863,9 @@ def apply_transformations_in_sequence(image4d, transformations, savedir, positio
     transformed_images_64 = [sitk.Cast(img, sitk.sitkFloat64) for img in transformed_images]
     resultImage4d = sitk.JoinSeries(transformed_images_64)
 
-    # Save the final transformed 4D image
-    sitk.WriteImage(resultImage4d, os.path.join(savedir, "ns_transformed_image.nii"))
+    if debug:
+        os.makedirs(savedir, exist_ok=True)
+        sitk.WriteImage(resultImage4d, os.path.join(savedir, "_debug_transformed.nii"))
 
     return resultImage4d
 
@@ -1243,18 +1241,18 @@ def extract_4d_subregion(image_4d, start_time, end_time):
 def _process_seven_block(args: dict) -> dict:
     # Worker for parallel 7-frame block processing (Stages A-D).
     # Top-level so it's picklable under macOS spawn.
-    start    = args["start"]
-    end      = args["end"]
-    savedir  = args["savedir"]
-    image4d  = args["image4d"]
-    dp_rbc4d = args["dp_rbc4d"]
-    dp_mem4d = args["dp_mem4d"]
-    clahe4d  = args["clahe4d"]
+    start             = args["start"]
+    phase_dir         = args["phase_dir"]
+    image4d           = args["image4d"]
+    dp_rbc4d          = args["dp_rbc4d"]
+    dp_mem4d          = args["dp_mem4d"]
+    clahe4d           = args["clahe4d"]
+    save_intermediate = args["save_intermediate"]
 
-    block_dir = os.path.join(savedir, str(start))
-    os.makedirs(block_dir, exist_ok=True)
+    os.makedirs(phase_dir, exist_ok=True)
 
-    if start > 0:
+    is_last_block = start > 0
+    if is_last_block:
         img_blk = reverse_last_seven_images(image4d)
         rbc_blk = reverse_last_seven_images(dp_rbc4d)
         mem_blk = reverse_last_seven_images(dp_mem4d)
@@ -1273,11 +1271,12 @@ def _process_seven_block(args: dict) -> dict:
         clahe4d    = clh4,
         dp_rbc4d   = rbc4,
         dp_mem4d   = mem4,
-        savedir    = os.path.join(block_dir, "stageA"),
+        savedir    = os.path.join(phase_dir, "stageA_register_4frames"),
         target_weights=[7],
         index_sets =[ {0,1,2,3} ],
         cyclic     = False,
-        time_threshold = time_threshold
+        time_threshold = time_threshold,
+        save_intermediate = save_intermediate,
     )
 
     # ── Stage B: rebuild frames 4–6 by inserting average(0–3) ──
@@ -1296,52 +1295,36 @@ def _process_seven_block(args: dict) -> dict:
         clahe4d    = up_clh,
         dp_rbc4d   = up_rbc,
         dp_mem4d   = up_mem,
-        savedir    = os.path.join(block_dir, "stageB"),
+        savedir    = os.path.join(phase_dir, "stageB_avg_into_frames_4to6"),
         target_weights=[7],
         index_sets =[ {0,1,2,3} ],
         cyclic     = False,
-        time_threshold = time_threshold
+        time_threshold = time_threshold,
+        save_intermediate = save_intermediate,
     )
 
     # ── Stage C: warp back & splice into a 7-frame block ──
     Ts = res43["transformations"]
+    stageC_dir = os.path.join(phase_dir, "stageC_warp_back_splice")
 
-    t_img = apply_transformations_in_sequence(
-        res4["resultImage4d"], Ts, os.path.join(block_dir,"stageC"), TransformationPosition.BEGINNING
-    )
-    combined_img = combine_transformed_and_registered(
-        t_img, res43["resultImage4d"],
-        index_transfer_range=(0,4), index_register_range=(1,4)
-    )
+    t_img = apply_transformations_in_sequence(res4["resultImage4d"],  Ts, stageC_dir, TransformationPosition.BEGINNING)
+    t_rbc = apply_transformations_in_sequence(res4["resultDpRbc4d"],  Ts, stageC_dir, TransformationPosition.BEGINNING)
+    t_mem = apply_transformations_in_sequence(res4["resultDpMem4d"],  Ts, stageC_dir, TransformationPosition.BEGINNING)
+    t_clh = apply_transformations_in_sequence(res4["resultClahe4d"],  Ts, stageC_dir, TransformationPosition.BEGINNING)
 
-    t_rbc = apply_transformations_in_sequence(
-        res4["resultDpRbc4d"], Ts, os.path.join(block_dir,"stageC"), TransformationPosition.BEGINNING
-    )
-    combined_rbc = combine_transformed_and_registered(
-        t_rbc, res43["resultDpRbc4d"],
-        index_transfer_range=(0,4), index_register_range=(1,4)
-    )
-
-    t_mem = apply_transformations_in_sequence(
-        res4["resultDpMem4d"], Ts, os.path.join(block_dir,"stageC"), TransformationPosition.BEGINNING
-    )
-    combined_mem = combine_transformed_and_registered(
-        t_mem, res43["resultDpMem4d"],
-        index_transfer_range=(0,4), index_register_range=(1,4)
-    )
-
-    t_clh = apply_transformations_in_sequence(
-        res4["resultClahe4d"], Ts, os.path.join(block_dir,"stageC"), TransformationPosition.BEGINNING
-    )
-    combined_clh = combine_transformed_and_registered(
-        t_clh, res43["resultClahe4d"],
-        index_transfer_range=(0,4), index_register_range=(1,4)
-    )
+    combined_img = combine_transformed_and_registered(t_img, res43["resultImage4d"],   index_transfer_range=(0,4), index_register_range=(1,4))
+    combined_rbc = combine_transformed_and_registered(t_rbc, res43["resultDpRbc4d"],   index_transfer_range=(0,4), index_register_range=(1,4))
+    combined_mem = combine_transformed_and_registered(t_mem, res43["resultDpMem4d"],   index_transfer_range=(0,4), index_register_range=(1,4))
+    combined_clh = combine_transformed_and_registered(t_clh, res43["resultClahe4d"],   index_transfer_range=(0,4), index_register_range=(1,4))
 
     final7_img = process_images(combined_img, (0,7))
     final7_rbc = process_images(combined_rbc, (0,7))
     final7_mem = process_images(combined_mem, (0,7))
     final7_clh = process_images(combined_clh, (0,7))
+
+    if save_intermediate:
+        _save_channels(stageC_dir,
+            gas=final7_img, rbc=final7_rbc, mem=final7_mem, clahe=final7_clh)
 
     # ── Stage D: 7-frame PCA ──
     res7 = orchestrate_registration_workflow(
@@ -1349,11 +1332,12 @@ def _process_seven_block(args: dict) -> dict:
         clahe4d    = final7_clh,
         dp_rbc4d   = final7_rbc,
         dp_mem4d   = final7_mem,
-        savedir    = os.path.join(block_dir, "stageD"),
+        savedir    = os.path.join(phase_dir, "stageD_7frame_PCA"),
         target_weights=[14],
         index_sets =[ set(range(7)) ],
         cyclic     = False,
-        time_threshold = time_threshold
+        time_threshold = time_threshold,
+        save_intermediate = save_intermediate,
     )
 
     out_img = res7["resultImage4d"]
@@ -1361,7 +1345,7 @@ def _process_seven_block(args: dict) -> dict:
     out_mem = res7["resultDpMem4d"]
     out_clh = res7["resultClahe4d"]
 
-    if start > 0:
+    if is_last_block:
         out_img = resort_to_original_order(out_img)
         out_rbc = resort_to_original_order(out_rbc)
         out_mem = resort_to_original_order(out_mem)
@@ -1383,42 +1367,46 @@ def step_groupwise_registration(
     clahe4d:  sitk.Image,
     savedir:  str,
     run_flags: tuple[int,int,int,int] = (1,1,1,1),
+    save_intermediate: bool = True,
     debug: bool = False
 ) -> dict:
     """
-    1) Split into two 7‑frame blocks (reverse the 2nd)
-    2) For each block: Stage A–D via orchestrate_registration_workflow
-    3) Un‑reverse 2nd, collect registered gas/RBC/MEM
-    4) Stitch into 14 frames
-    5) [opt] insert 2 middle averages → 16 frames
-    6) Final cyclic PCA over all frames
+    Hierarchical groupwise PCA registration over 16 timepoints.
+    See Logic.md for the full 7-phase description.
+
+    save_intermediate: if True, write every per-step result (Stages A-D for
+        each 7-frame block, plus Stages E/L and the Phase 5/6/7 outputs) as
+        both .nii and .mat. If False, only `final_groupwise/` is written.
     """
 
     os.makedirs(savedir, exist_ok=True)
     N = image4d.GetSize()[3]
-    blocks = [(0,7), (N-7, N)]
-
-    first_imgs, first_rbcs, first_mems, first_clhs   = [], [], [], []
-    last_imgs,  last_rbcs,  last_mems, last_clhs    = [], [], [], []
+    blocks = [(0, 7), (N-7, N)]
+    phase_dirs = [
+        os.path.join(savedir, "01_phase1_first7"),
+        os.path.join(savedir, "02_phase2_last7"),
+    ]
 
     block_args = [
         {
-            "start":    start,
-            "end":      end,
-            "savedir":  savedir,
-            "image4d":  image4d,
-            "dp_rbc4d": dp_rbc4d,
-            "dp_mem4d": dp_mem4d,
-            "clahe4d":  clahe4d,
+            "start":             start,
+            "end":               end,
+            "phase_dir":         phase_dir,
+            "image4d":           image4d,
+            "dp_rbc4d":          dp_rbc4d,
+            "dp_mem4d":          dp_mem4d,
+            "clahe4d":           clahe4d,
+            "save_intermediate": save_intermediate,
         }
-        for start, end in blocks
+        for (start, end), phase_dir in zip(blocks, phase_dirs)
     ]
 
-    # Run both 7-frame blocks concurrently — they share no mutable state and
-    # write to distinct block_dir subtrees, so process-level isolation is safe.
+    # Phase 1 + Phase 2 — independent 7-frame blocks, run in parallel.
     with ProcessPoolExecutor(max_workers=2) as pool:
         block_results = list(pool.map(_process_seven_block, block_args))
 
+    first_imgs, first_rbcs, first_mems, first_clhs = [], [], [], []
+    last_imgs,  last_rbcs,  last_mems,  last_clhs  = [], [], [], []
     for r in block_results:
         if r["start"] > 0:
             last_imgs.append(r["out_img"])
@@ -1431,142 +1419,141 @@ def step_groupwise_registration(
             first_mems.append(r["out_mem"])
             first_clhs.append(r["out_clh"])
 
-        # --- Merge into a 14‑frame series ---
-    combined14_img   = combine_4d_images(first_imgs, last_imgs)                                        
-    combined14_rbc   = combine_4d_images(first_rbcs, last_rbcs)                                        
-    combined14_mem   = combine_4d_images(first_mems,last_mems)                                        
-    combined14_clahe = combine_4d_images(first_clhs, last_clhs)
+    # ── Phase 3: Combine into 14 frames and run cyclic PCA (Stage E) ──
+    combined14_img   = combine_4d_images(first_imgs,  last_imgs)
+    combined14_rbc   = combine_4d_images(first_rbcs,  last_rbcs)
+    combined14_mem   = combine_4d_images(first_mems,  last_mems)
+    combined14_clahe = combine_4d_images(first_clhs,  last_clhs)
 
-    if debug:
-        sitk.WriteImage(combined14_img,   os.path.join(savedir,"14_combined_image.nii"))
-        sitk.WriteImage(combined14_clahe, os.path.join(savedir,"14_combined_clahe.nii"))
-        sitk.WriteImage(combined14_rbc,   os.path.join(savedir,"14_combined_rbc.nii"))
-        sitk.WriteImage(combined14_mem,   os.path.join(savedir,"14_combined_mem.nii"))
+    phase3_dir = os.path.join(savedir, "03_phase3_combined14")
+    if save_intermediate:
+        _save_channels(os.path.join(phase3_dir, "input_combined14"),
+            gas=combined14_img, rbc=combined14_rbc, mem=combined14_mem, clahe=combined14_clahe)
 
     res14 = orchestrate_registration_workflow(
         image4d    = combined14_img,
-        clahe4d     = combined14_clahe,
-        dp_rbc4d    = combined14_rbc,
-        dp_mem4d    = combined14_mem,
-        savedir     = os.path.join(savedir, "stageE"),
+        clahe4d    = combined14_clahe,
+        dp_rbc4d   = combined14_rbc,
+        dp_mem4d   = combined14_mem,
+        savedir    = os.path.join(phase3_dir, "stageE_14frame_cyclic_PCA"),
         target_weights=[30],
-        index_sets   =[ set(range(14)) ],
-        cyclic      = True,
-        time_threshold =  time_threshold
-    )        
+        index_sets =[ set(range(14)) ],
+        cyclic     = True,
+        time_threshold = time_threshold,
+        save_intermediate = save_intermediate,
+    )
 
     first_seven_image_4d = extract_4d_subregion(res14["resultImage4d"], 0, 7)
-    last_seven_image_4d = extract_4d_subregion(res14["resultImage4d"], combined14_img.GetSize()[3] - 7, combined14_img.GetSize()[3])
-    average_image_first = average_4d_image_stack(first_seven_image_4d)
-    average_image_last = average_4d_image_stack(last_seven_image_4d)
+    last_seven_image_4d  = extract_4d_subregion(res14["resultImage4d"], combined14_img.GetSize()[3] - 7, combined14_img.GetSize()[3])
+    average_image_first  = average_4d_image_stack(first_seven_image_4d)
+    average_image_last   = average_4d_image_stack(last_seven_image_4d)
 
     first_seven_rbc_4d = extract_4d_subregion(res14["resultDpRbc4d"], 0, 7)
-    last_seven_rbc_4d = extract_4d_subregion(res14["resultDpRbc4d"], combined14_img.GetSize()[3] - 7, combined14_img.GetSize()[3])
-    average_rbc_first = average_4d_image_stack(first_seven_rbc_4d)
-    average_rbc_last = average_4d_image_stack(last_seven_rbc_4d)
+    last_seven_rbc_4d  = extract_4d_subregion(res14["resultDpRbc4d"], combined14_img.GetSize()[3] - 7, combined14_img.GetSize()[3])
+    average_rbc_first  = average_4d_image_stack(first_seven_rbc_4d)
+    average_rbc_last   = average_4d_image_stack(last_seven_rbc_4d)
 
     first_seven_mem_4d = extract_4d_subregion(res14["resultDpMem4d"], 0, 7)
-    last_seven_mem_4d = extract_4d_subregion(res14["resultDpMem4d"], combined14_img.GetSize()[3] - 7, combined14_img.GetSize()[3])
-    average_mem_first = average_4d_image_stack(first_seven_mem_4d)
-    average_mem_last = average_4d_image_stack(last_seven_mem_4d)
+    last_seven_mem_4d  = extract_4d_subregion(res14["resultDpMem4d"], combined14_img.GetSize()[3] - 7, combined14_img.GetSize()[3])
+    average_mem_first  = average_4d_image_stack(first_seven_mem_4d)
+    average_mem_last   = average_4d_image_stack(last_seven_mem_4d)
 
     first_seven_clahe_4d = extract_4d_subregion(res14["resultClahe4d"], 0, 7)
-    last_seven_clahe_4d = extract_4d_subregion(res14["resultClahe4d"], combined14_img.GetSize()[3] - 7, combined14_img.GetSize()[3])
-    average_clahe_first = average_4d_image_stack(first_seven_clahe_4d)
-    average_clahe_last = average_4d_image_stack(last_seven_clahe_4d)
+    last_seven_clahe_4d  = extract_4d_subregion(res14["resultClahe4d"], combined14_img.GetSize()[3] - 7, combined14_img.GetSize()[3])
+    average_clahe_first  = average_4d_image_stack(first_seven_clahe_4d)
+    average_clahe_last   = average_4d_image_stack(last_seven_clahe_4d)
 
-    # Restore the loop-leaked block_dir from the original sequential code
-    # (Stage L and the subsequent transformix applies still write under the
-    # last block's directory; preserved for behavior parity — flagged for
-    # follow-up).
-    block_dir = os.path.join(savedir, str(blocks[-1][0]))
+    # ── Phase 4: Midpoint alignment using [avg_first, R8, R9, avg_last] (Stage L) ──
+    last_up_img = update_images_final(image4d, index_range=(7, 9), average_image_first=average_image_first, average_image_last=average_image_last)
+    last_up_rbc = update_images_final(dp_rbc4d, index_range=(7, 9), average_image_first=average_rbc_first,   average_image_last=average_rbc_last)
+    last_up_mem = update_images_final(dp_mem4d, index_range=(7, 9), average_image_first=average_mem_first,   average_image_last=average_mem_last)
+    last_up_clh = update_images_final(clahe4d,  index_range=(7, 9), average_image_first=average_clahe_first, average_image_last=average_clahe_last)
 
-    last_up_img = update_images_final(image4d, index_range=(7, 9), average_image_first = average_image_first, average_image_last = average_image_last)
-    last_up_rbc = update_images_final(dp_rbc4d, index_range=(7, 9), average_image_first = average_rbc_first, average_image_last = average_rbc_last)
-    last_up_mem = update_images_final(dp_mem4d, index_range=(7, 9), average_image_first = average_mem_first, average_image_last = average_mem_last)
-    last_up_clh = update_images_final(clahe4d, index_range=(7, 9), average_image_first = average_clahe_first, average_image_last = average_clahe_last)
+    phase4_dir = os.path.join(savedir, "04_phase4_midpoint")
+    if save_intermediate:
+        _save_channels(os.path.join(phase4_dir, "input_with_R8_R9"),
+            gas=last_up_img, rbc=last_up_rbc, mem=last_up_mem, clahe=last_up_clh)
 
     res142 = orchestrate_registration_workflow(
         image4d    = last_up_img,
-        clahe4d     = last_up_clh,
-        dp_rbc4d    = last_up_rbc,
-        dp_mem4d    = last_up_mem,
-        savedir     = os.path.join(block_dir, "stageL"),
+        clahe4d    = last_up_clh,
+        dp_rbc4d   = last_up_rbc,
+        dp_mem4d   = last_up_mem,
+        savedir    = os.path.join(phase4_dir, "stageL_align_R8_R9"),
         target_weights=[7],
-        index_sets   =[ {0,1,2,3} ],
-        cyclic      = True,
-        time_threshold =  time_threshold        
+        index_sets =[ {0,1,2,3} ],
+        cyclic     = True,
+        time_threshold = time_threshold,
+        save_intermediate = save_intermediate,
     )
 
     Tf = res142["transformations"]
 
+    # ── Phase 5: Apply Stage L transforms back to first 7 (BEGINNING) and last 7 (END) ──
+    phase5_dir = os.path.join(savedir, "05_phase5_apply_back")
+    apply_dir = os.path.join(phase5_dir, "_transformix_scratch")  # only used in debug
 
-    transfered_first_seven_image_output = apply_transformations_in_sequence(first_seven_image_4d, Tf, os.path.join(block_dir,"stageD"), TransformationPosition.BEGINNING)
-    transfered_last_seven_image_output = apply_transformations_in_sequence(last_seven_image_4d, Tf, os.path.join(block_dir,"stageD"), TransformationPosition.END)
+    transfered_first7_img = apply_transformations_in_sequence(first_seven_image_4d, Tf, apply_dir, TransformationPosition.BEGINNING)
+    transfered_first7_rbc = apply_transformations_in_sequence(first_seven_rbc_4d,   Tf, apply_dir, TransformationPosition.BEGINNING)
+    transfered_first7_mem = apply_transformations_in_sequence(first_seven_mem_4d,   Tf, apply_dir, TransformationPosition.BEGINNING)
+    transfered_first7_clh = apply_transformations_in_sequence(first_seven_clahe_4d, Tf, apply_dir, TransformationPosition.BEGINNING)
 
-    finalCombinedImage4d = combine_transformed_and_registered(
-        transfered_first_seven_image_output, res142["resultImage4d"], 
-        index_transfer_range=(0, 7), index_register_range=(1, 3)
-    )
+    transfered_last7_img  = apply_transformations_in_sequence(last_seven_image_4d,  Tf, apply_dir, TransformationPosition.END)
+    transfered_last7_rbc  = apply_transformations_in_sequence(last_seven_rbc_4d,    Tf, apply_dir, TransformationPosition.END)
+    transfered_last7_mem  = apply_transformations_in_sequence(last_seven_mem_4d,    Tf, apply_dir, TransformationPosition.END)
+    transfered_last7_clh  = apply_transformations_in_sequence(last_seven_clahe_4d,  Tf, apply_dir, TransformationPosition.END)
 
+    if save_intermediate:
+        _save_channels(os.path.join(phase5_dir, "first7_BEGINNING"),
+            gas=transfered_first7_img, rbc=transfered_first7_rbc, mem=transfered_first7_mem, clahe=transfered_first7_clh)
+        _save_channels(os.path.join(phase5_dir, "last7_END"),
+            gas=transfered_last7_img, rbc=transfered_last7_rbc, mem=transfered_last7_mem, clahe=transfered_last7_clh)
 
-    transfered_first_seven_rbc_output = apply_transformations_in_sequence(first_seven_rbc_4d, Tf, os.path.join(block_dir,"stageD"), TransformationPosition.BEGINNING)
-    transfered_last_seven_rbc_output = apply_transformations_in_sequence(last_seven_rbc_4d, Tf, os.path.join(block_dir,"stageD"), TransformationPosition.END)
+    finalCombinedImage4d = combine_transformed_and_registered(transfered_first7_img, res142["resultImage4d"], index_transfer_range=(0, 7), index_register_range=(1, 3))
+    finalCombinedDpRbc4d = combine_transformed_and_registered(transfered_first7_rbc, res142["resultDpRbc4d"], index_transfer_range=(0, 7), index_register_range=(1, 3))
+    finalCombinedDpMem4d = combine_transformed_and_registered(transfered_first7_mem, res142["resultDpMem4d"], index_transfer_range=(0, 7), index_register_range=(1, 3))
+    finalCombinedClahe4d = combine_transformed_and_registered(transfered_first7_clh, res142["resultClahe4d"], index_transfer_range=(0, 7), index_register_range=(1, 3))
 
-    finalCombinedDpRbc4d = combine_transformed_and_registered(
-        transfered_first_seven_rbc_output, res142["resultDpRbc4d"], 
-        index_transfer_range=(0, 7), index_register_range=(1, 3)
-    )
+    # ── Phase 6: Assemble the 16-frame stack (TR1-TR7 + R8' R9' + TR10-TR16) ──
+    combined16_img   = combine_4d_itk_images(finalCombinedImage4d, transfered_last7_img)
+    combined16_rbc   = combine_4d_itk_images(finalCombinedDpRbc4d, transfered_last7_rbc)
+    combined16_mem   = combine_4d_itk_images(finalCombinedDpMem4d, transfered_last7_mem)
+    combined16_clahe = combine_4d_itk_images(finalCombinedClahe4d, transfered_last7_clh)
 
+    if save_intermediate:
+        _save_channels(os.path.join(savedir, "06_phase6_assembled16"),
+            gas=combined16_img, rbc=combined16_rbc, mem=combined16_mem, clahe=combined16_clahe)
 
-    transfered_first_seven_mem_output = apply_transformations_in_sequence(first_seven_mem_4d, Tf, os.path.join(block_dir,"stageD"), TransformationPosition.BEGINNING)
-    transfered_last_seven_mem_output = apply_transformations_in_sequence(last_seven_mem_4d, Tf, os.path.join(block_dir,"stageD"), TransformationPosition.END)
-
-    finalCombinedDpMem4d = combine_transformed_and_registered(
-        transfered_first_seven_mem_output, res142["resultDpMem4d"], 
-        index_transfer_range=(0, 7), index_register_range=(1, 3)
-    )
-
-
-    transfered_first_seven_clahe_output = apply_transformations_in_sequence(first_seven_clahe_4d, Tf, os.path.join(block_dir,"stageD"), TransformationPosition.BEGINNING)
-    transfered_last_seven_clahe_output = apply_transformations_in_sequence(last_seven_clahe_4d, Tf, os.path.join(block_dir,"stageD"), TransformationPosition.END)
-
-    finalCombinedClahe4d = combine_transformed_and_registered(
-        transfered_first_seven_clahe_output, res142["resultClahe4d"],
-        index_transfer_range=(0, 7), index_register_range=(1, 3)
-    )
-
-
-    combined16_img = combine_4d_itk_images(finalCombinedImage4d, transfered_last_seven_image_output)
-    combined16_rbc = combine_4d_itk_images(finalCombinedDpRbc4d, transfered_last_seven_rbc_output)
-    combined16_mem = combine_4d_itk_images(finalCombinedDpMem4d, transfered_last_seven_mem_output)
-    combined16_clahe = combine_4d_itk_images(finalCombinedClahe4d, transfered_last_seven_clahe_output)
-
-    # --- Final cyclic PCA over ALL frames (16) ---
-    final_dir = os.path.join(savedir, "final_cyclic")
-    os.makedirs(final_dir, exist_ok=True)
+    # ── Phase 7: Final cyclic PCA over all 16 frames ──
     final_res = orchestrate_registration_workflow(
         image4d    = combined16_img,
-        clahe4d     = combined16_clahe,
-        dp_rbc4d    = combined16_rbc,
-        dp_mem4d    = combined16_mem,
-        savedir     = final_dir,
-        target_weights = [35],          
-        index_sets      = [ set(range(16)) ],
-        cyclic       = True,
-        time_threshold =  time_threshold        
+        clahe4d    = combined16_clahe,
+        dp_rbc4d   = combined16_rbc,
+        dp_mem4d   = combined16_mem,
+        savedir    = os.path.join(savedir, "07_phase7_final16_PCA"),
+        target_weights = [35],
+        index_sets     = [ set(range(16)) ],
+        cyclic         = True,
+        time_threshold = time_threshold,
+        save_intermediate = save_intermediate,
     )
 
-        # --- Package and return everything ---
+    # Always write the final groupwise outputs at the top level, regardless of flag.
+    _save_channels(os.path.join(savedir, "final_groupwise"),
+        gas=final_res["resultImage4d"],
+        rbc=final_res["resultDpRbc4d"],
+        mem=final_res["resultDpMem4d"],
+        clahe=final_res["resultClahe4d"],
+        mask=final_res["resultMask4d"])
+
     return {
         "resultImage4d":   final_res["resultImage4d"],
         "resultMask4d":    final_res["resultMask4d"],
         "resultDpRbc4d":   final_res["resultDpRbc4d"],
         "resultDpMem4d":   final_res["resultDpMem4d"],
         "resultClahe4d":   final_res["resultClahe4d"],
-        # all transforms in order: [T_block1, T_block2, T_cyclic14or16]
         "transformations": final_res["transformations"],
-        "run_flags": run_flags
+        "run_flags": run_flags,
     }
 
 
@@ -1941,9 +1928,9 @@ def register_EI_ants(image3D, dp_rbc3D, dp_mem3D, refno, savedir):
 
 
 def main():
-    # Read the initial 
+    # Read the initial
     image, dp_rbc, dp_mem, clahe = read_files(input_files)
-   
+
     s0  = time.time()
     ################## CURRRENT REGISTRATION #########################################
     final_registration_results = step_groupwise_registration(
@@ -1951,7 +1938,8 @@ def main():
         dp_rbc,
         dp_mem,
         clahe,
-        save_dir
+        save_dir,
+        save_intermediate=True,   # set to False to skip per-step writes
     )
     #################################################################################
     e0 = time.time()
@@ -1983,9 +1971,8 @@ def main():
     rbc4Dn = join_image3d_ants(dp_rbc3Dn)
     mem4Dn = join_image3d_ants(dp_mem3Dn)
 
-    sitk.WriteImage(image4Dn, os.path.join(save_dir, "gas_registered_orig.nii"))
-    sitk.WriteImage(rbc4Dn, os.path.join(save_dir, "rbc_registered_orig.nii"))
-    sitk.WriteImage(mem4Dn, os.path.join(save_dir, "mem_registered_orig.nii"))
+    _save_channels(os.path.join(save_dir, "final_ants"),
+        gas=image4Dn, rbc=rbc4Dn, mem=mem4Dn)
 
     e6 = time.time()
     print('Last EI Registration took', round((e6 - s6)/60, 2), 'minutes.')
