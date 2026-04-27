@@ -15,10 +15,13 @@ all_ok = True
 
 all_ok &= check("SimpleITK import", lambda: __import__("SimpleITK"))
 all_ok &= check("Elastix filter available", lambda: __import__("SimpleITK").ElastixImageFilter())
-all_ok &= check("PCAMetric2 in groupwise map", lambda: (
-    lambda sitk: sitk.GetDefaultParameterMap("groupwise").get("Metric") or
-    (_ for _ in ()).throw(Exception("no Metric key"))
-)(__import__("SimpleITK")))
+def _check_groupwise_map():
+    import SimpleITK as sitk
+    pm = sitk.GetDefaultParameterMap("groupwise")
+    if "Metric" not in pm:
+        raise Exception("no Metric key")
+    _ = pm["Metric"]
+all_ok &= check("Default groupwise parameter map has Metric", _check_groupwise_map)
 
 import SimpleITK as sitk
 def _check_pcametric2():

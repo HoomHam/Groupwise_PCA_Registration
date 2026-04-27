@@ -1,4 +1,6 @@
-SimpleITK>=2.4.0
+# SimpleElastix-bundled SimpleITK — provides ElastixImageFilter and the
+# "groupwise" parameter map with PCAMetric2. Plain SimpleITK does not.
+SimpleITK-SimpleElastix>=3.0.0a1
 antspyx>=0.5.0
 numpy>=1.26.0
 scipy>=1.13.0
