@@ -11,7 +11,7 @@ from skimage import exposure
 from enum import Enum
 from concurrent.futures import ProcessPoolExecutor
 
-save_dir = '/Users/hoomham/Hooman/Work/Analysis/2024-11-13_025JC/reg/5/'
+save_dir = '/Users/hoomham/Hooman/Work/Analysis/2024-11-13_025JC/reg/1000/'
 input_files = '/Users/hoomham/Hooman/Work/Analysis/2024-11-13_025JC/rec/'
 
 endinhale = 6 
@@ -450,7 +450,7 @@ def register_groupwise(
     # parameterMap['MaximumNumberOfIterations'] = ['10000']
     # parameterMap['MaximumNumberOfIterations'] = ['100']
     # parameterMap['MaximumNumberOfIterations'] = ['10000']
-    parameterMap['MaximumNumberOfIterations'] = ['5']
+    parameterMap['MaximumNumberOfIterations'] = ['1000']
     # parameterMap['MaximumNumberOfIterations'] = ['1000']
     
     # Pyramid Setting
