@@ -11,7 +11,7 @@ from skimage import exposure
 from enum import Enum
 from concurrent.futures import ProcessPoolExecutor
 
-save_dir = '/Users/hoomham/Hooman/Work/Analysis/2024-11-13_025JC/reg/1000/'
+save_dir = '/Users/hoomham/Hooman/Work/Analysis/2024-11-13_025JC/reg/current_test_5iter/'
 input_files = '/Users/hoomham/Hooman/Work/Analysis/2024-11-13_025JC/rec/'
 
 endinhale = 6 
@@ -444,13 +444,13 @@ def register_groupwise(
     # Optimizer Setting
     parameterMap['NumberOfResolutions'] = ['4']
     parameterMap['AutomaticParameterEstimation'] = ['true']
-    parameterMap['ASGDParameterEstimationMethod'] = ['DisplacementDistribution']
+    parameterMap['ASGDParameterEstimationMethod'] = ['Original']
     # parameterMap['MaximumNumberOfIterations'] = ['10000', '20000', '30000', '40000']
     # parameterMap['MaximumNumberOfIterations'] = ['20000', '40000', '60000', '80000']
     # parameterMap['MaximumNumberOfIterations'] = ['10000']
     # parameterMap['MaximumNumberOfIterations'] = ['100']
     # parameterMap['MaximumNumberOfIterations'] = ['10000']
-    parameterMap['MaximumNumberOfIterations'] = ['1000']
+    parameterMap['MaximumNumberOfIterations'] = ['5']
     # parameterMap['MaximumNumberOfIterations'] = ['1000']
     
     # Pyramid Setting
@@ -463,7 +463,7 @@ def register_groupwise(
     parameterMap['NewSamplesEveryIteration'] = ['true']
     parameterMap['ImageSampler'] = ['RandomSparseMask']
     # parameterMap['ImageSampler'] = ['RandomCoordinate']
-    parameterMap['CheckNumberOfSamples'] = ['false']  # workaround: PCAMetric2 throws "Too many samples map outside moving image buffer" with the 5-iter test settings; revisit when iterations are bumped
+    parameterMap['CheckNumberOfSamples'] = ['true']
 
     # Mask Setting
     parameterMap['ErodeMask'] = ['false']
@@ -697,8 +697,8 @@ def orchestrate_registration_workflow(
     # Stage 2: CLAHE
     #
     if do_clahe:
-        _maybe_write_debug(clahe4d, "stage2", "20-clahe-input.nii")
-        regor2 = clahe4d
+        _maybe_write_debug(clh1, "stage2", "20-clahe-input.nii")
+        regor2 = clh1
     else:
         regor2 = img1
 
@@ -1252,13 +1252,7 @@ def _process_seven_block(args: dict) -> dict:
     os.makedirs(phase_dir, exist_ok=True)
 
     is_last_block = start > 0
-    if is_last_block:
-        img_blk = reverse_last_seven_images(image4d)
-        rbc_blk = reverse_last_seven_images(dp_rbc4d)
-        mem_blk = reverse_last_seven_images(dp_mem4d)
-        clh_blk = reverse_last_seven_images(clahe4d)
-    else:
-        img_blk, rbc_blk, mem_blk, clh_blk = image4d, dp_rbc4d, dp_mem4d, clahe4d
+    img_blk, rbc_blk, mem_blk, clh_blk = image4d, dp_rbc4d, dp_mem4d, clahe4d
 
     # ── Stage A: register frames 0–3 ──
     img4 = process_images(img_blk, (0,4))
@@ -1387,19 +1381,29 @@ def step_groupwise_registration(
         os.path.join(savedir, "02_phase2_last7"),
     ]
 
-    block_args = [
-        {
+    # Pre-slice and pre-reverse each 7-frame block in the parent so workers
+    # receive only 7 frames via pickle — not the full 16-frame stack.
+    block_args = []
+    for (start, end), phase_dir in zip(blocks, phase_dirs):
+        if start == 0:
+            blk_img = process_images(image4d,  (0, 7))
+            blk_rbc = process_images(dp_rbc4d, (0, 7))
+            blk_mem = process_images(dp_mem4d, (0, 7))
+            blk_clh = process_images(clahe4d,  (0, 7))
+        else:
+            blk_img = reverse_last_seven_images(image4d)
+            blk_rbc = reverse_last_seven_images(dp_rbc4d)
+            blk_mem = reverse_last_seven_images(dp_mem4d)
+            blk_clh = reverse_last_seven_images(clahe4d)
+        block_args.append({
             "start":             start,
-            "end":               end,
             "phase_dir":         phase_dir,
-            "image4d":           image4d,
-            "dp_rbc4d":          dp_rbc4d,
-            "dp_mem4d":          dp_mem4d,
-            "clahe4d":           clahe4d,
+            "image4d":           blk_img,
+            "dp_rbc4d":          blk_rbc,
+            "dp_mem4d":          blk_mem,
+            "clahe4d":           blk_clh,
             "save_intermediate": save_intermediate,
-        }
-        for (start, end), phase_dir in zip(blocks, phase_dirs)
-    ]
+        })
 
     # Phase 1 + Phase 2 — independent 7-frame blocks, run in parallel.
     with ProcessPoolExecutor(max_workers=2) as pool:
