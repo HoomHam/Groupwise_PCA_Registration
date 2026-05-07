@@ -461,8 +461,8 @@ def register_groupwise(
     # parameterMap['MaximumNumberOfIterations'] = ['10000']
     # parameterMap['MaximumNumberOfIterations'] = ['100']
     # parameterMap['MaximumNumberOfIterations'] = ['10000']
-    parameterMap['MaximumNumberOfIterations'] = ['5000']
-    # parameterMap['MaximumNumberOfIterations'] = ['1000']
+    # parameterMap['MaximumNumberOfIterations'] = ['5000']
+    parameterMap['MaximumNumberOfIterations'] = ['1000']
     
     # Pyramid Setting
     parameterMap['GridSpacingSchedule'] = ['4','3','2','1']
