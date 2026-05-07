@@ -10,6 +10,8 @@ from scipy.ndimage import label
 from skimage import exposure
 from enum import Enum
 from concurrent.futures import ProcessPoolExecutor
+import shutil
+import glob
 
 save_dir = '/Users/hoomham/Hooman/Work/Analysis/2024-11-13_025JC/reg/current_test_5000iter/'
 input_files = '/Users/hoomham/Hooman/Work/Analysis/2024-11-13_025JC/rec/'
@@ -29,6 +31,15 @@ def find_file_with_prefix(directory, prefix):
 class TransformationPosition(Enum):
     BEGINNING = 1
     END = 2
+
+def cleanup_elastix_temp_files(phase_dir):
+    """Clean up Elastix temporary working directories after phase completes."""
+    elastix_dir = os.path.join(phase_dir, '_elastix')
+    if os.path.exists(elastix_dir):
+        try:
+            shutil.rmtree(elastix_dir)
+        except Exception as e:
+            pass  # Silently skip cleanup errors
 
 def read_files(directory):
     """
@@ -1423,6 +1434,12 @@ def step_groupwise_registration(
             first_mems.append(r["out_mem"])
             first_clhs.append(r["out_clh"])
 
+    # Clean up Elastix temp files from phases 1 & 2
+    for phase_dir in phase_dirs:
+        cleanup_elastix_temp_files(os.path.join(phase_dir, "stageA_register_4frames"))
+        cleanup_elastix_temp_files(os.path.join(phase_dir, "stageB_avg_into_frames_4to6"))
+        cleanup_elastix_temp_files(os.path.join(phase_dir, "stageD_7frame_PCA"))
+
     # ── Phase 3: Combine into 14 frames and run cyclic PCA (Stage E) ──
     combined14_img   = combine_4d_images(first_imgs,  last_imgs)
     combined14_rbc   = combine_4d_images(first_rbcs,  last_rbcs)
@@ -1446,6 +1463,7 @@ def step_groupwise_registration(
         time_threshold = time_threshold,
         save_intermediate = save_intermediate,
     )
+    cleanup_elastix_temp_files(os.path.join(phase3_dir, "stageE_14frame_cyclic_PCA"))
 
     first_seven_image_4d = extract_4d_subregion(res14["resultImage4d"], 0, 7)
     last_seven_image_4d  = extract_4d_subregion(res14["resultImage4d"], combined14_img.GetSize()[3] - 7, combined14_img.GetSize()[3])
@@ -1490,6 +1508,7 @@ def step_groupwise_registration(
         time_threshold = time_threshold,
         save_intermediate = save_intermediate,
     )
+    cleanup_elastix_temp_files(os.path.join(phase4_dir, "stageL_align_R8_R9"))
 
     Tf = res142["transformations"]
 
@@ -1541,6 +1560,7 @@ def step_groupwise_registration(
         time_threshold = time_threshold,
         save_intermediate = save_intermediate,
     )
+    cleanup_elastix_temp_files(os.path.join(savedir, "07_phase7_final16_PCA"))
 
     # Always write the final groupwise outputs at the top level, regardless of flag.
     _save_channels(os.path.join(savedir, "final_groupwise"),
