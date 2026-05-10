@@ -13,7 +13,7 @@ from concurrent.futures import ProcessPoolExecutor
 import shutil
 import glob
 
-save_dir = '/Users/hoomham/Hooman/Work/Analysis/2024-11-13_025JC/reg/current_test_5000iter/'
+save_dir = '/Volumes/HoomHamExt/Work/Analysis/2024-11-13_025JC/reg/'
 input_files = '/Users/hoomham/Hooman/Work/Analysis/2024-11-13_025JC/rec/'
 
 endinhale = 6 
@@ -462,7 +462,7 @@ def register_groupwise(
     # parameterMap['MaximumNumberOfIterations'] = ['100']
     # parameterMap['MaximumNumberOfIterations'] = ['10000']
     # parameterMap['MaximumNumberOfIterations'] = ['5000']
-    parameterMap['MaximumNumberOfIterations'] = ['1000']
+    parameterMap['MaximumNumberOfIterations'] = ['5000', '4000', '3000', '2000']
     
     # Pyramid Setting
     parameterMap['GridSpacingSchedule'] = ['4','3','2','1']
