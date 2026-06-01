@@ -19,3 +19,6 @@ __pycache__/
 
 # Logs
 *.log
+
+# Workspace: helper scripts, analysis, tests, outputs (development only)
+workspace/

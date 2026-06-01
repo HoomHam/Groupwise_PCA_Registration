@@ -13,7 +13,7 @@ from concurrent.futures import ProcessPoolExecutor
 import shutil
 import glob
 
-save_dir = '/Volumes/HoomHamExt/Work/Analysis/2024-11-13_025JC/reg/'
+save_dir = '/Volumes/HoomHamExt/Work/Analysis/2024-11-13_025JC/reg/test_5432000iter_nofilter/'
 input_files = '/Users/hoomham/Hooman/Work/Analysis/2024-11-13_025JC/rec/'
 
 endinhale = 6 
@@ -44,9 +44,9 @@ def cleanup_elastix_temp_files(phase_dir):
 def read_files(directory):
     """
     Load 4D volumes from `directory`:
-      - gas‐space MAT (“rspace”, key='image’)
-      - CLAHE MAT (“cspace”, key='clahe’)
-      - dissolved‐phase complex MAT (“dspace”, key='dspace’) -> splits to dp_rbc & dp_mem
+      - gas‐space MAT ("rspace", key='image')
+      - CLAHE MAT ("cspace", key='clahe')
+      - dissolved‐phase complex MAT ("dspace", key='dspace') -> splits to dp_rbc & dp_mem
     Returns: (image4d, dp_rbc4d, dp_mem4d, clahe4d)
     """
     def find_file_with_prefix(prefix):
@@ -74,11 +74,12 @@ def read_files(directory):
     clahe4d = process_mat_file(find_file_with_prefix('cspace'), 'clahe')
 
     # dissolved‐phase complex → real/imag splits
+    # Handles both key='dspace' (standard) and key='image' (some datasets)
     dpath   = find_file_with_prefix('dspace')
     mat     = scipy.io.loadmat(dpath)
-    cplx    = mat.get('dspace')
+    cplx    = mat.get('dspace') or mat.get('image')
     if cplx is None:
-        raise KeyError(f"Key 'dspace' not found in {dpath}")
+        raise KeyError(f"Neither 'dspace' nor 'image' key found in {dpath}")
     vr, vm = sitk.VectorOfImage(), sitk.VectorOfImage()
     for t in range(cplx.shape[3]):
         arr = np.transpose(cplx[:, :, :, t], (2, 1, 0))
@@ -389,6 +390,7 @@ def register_groupwise(
     image4d, registeror, dp_rbc4d, dp_mem4d, clahe4d, savedir,
     time_threshold, cyclic,
     debug=False,
+    iterations=None,   # list of strings e.g. ['5000','4000','3000','1000']; None = use default ['500']
 ):
     """
     Single groupwise-PCA run on 4D image, producing
@@ -462,7 +464,7 @@ def register_groupwise(
     # parameterMap['MaximumNumberOfIterations'] = ['100']
     # parameterMap['MaximumNumberOfIterations'] = ['10000']
     # parameterMap['MaximumNumberOfIterations'] = ['5000']
-    parameterMap['MaximumNumberOfIterations'] = ['5000', '4000', '3000', '2000']
+    parameterMap['MaximumNumberOfIterations'] = iterations if iterations else ['500']
     
     # Pyramid Setting
     parameterMap['GridSpacingSchedule'] = ['4','3','2','1']
@@ -647,20 +649,28 @@ def orchestrate_registration_workflow(
     index_sets:    list[set[int]],
     cyclic: bool,
     time_threshold: int,
-    run_flags:    tuple[int,int,int,int] = (1,1,1,1),
+    run_flags:    tuple[int,int,int] = (1,1,1),
+    pad: bool = False,
     save_intermediate: bool = True,
-    debug: bool = False
+    debug: bool = False,
+    iterations=None,
 ) -> dict:
     """
     Multi-stage groupwise PCA registration pipeline.
 
-    run_flags = (do_enhance, do_denoise, do_clahe, do_image)
+    run_flags = (do_enhance, do_denoise, do_clahe)
+    pad: stages with flag=0 still run using image as its own guide
+         (gaps filled → always 4 registrations).
+         pad=False: only flagged stages + mandatory final image stage run.
 
-    save_intermediate: if True, write the registered (gas/rbc/mem/clahe/mask)
-        result of this call into `savedir` as both .nii and .mat.
-    debug: if True, additionally write the inner sub-stage (0-3) intermediates.
+    Examples:
+      (0,0,0)+pad=False → 1 reg  (final image only)
+      (0,0,0)+pad=True  → 4 regs (image x3 + final)
+      (1,0,1)+pad=False → 3 regs (enhance + CLAHE + final)
+      (1,0,1)+pad=True  → 4 regs (enhance + image + CLAHE + final)
+      (1,1,1)           → 4 regs regardless of pad (no gaps)
     """
-    do_enhance, do_denoise, do_clahe, do_image = run_flags
+    do_enhance, do_denoise, do_clahe = run_flags
 
     def _maybe_write_debug(img: sitk.Image, stage: str, fname: str):
         if debug:
@@ -670,85 +680,84 @@ def orchestrate_registration_workflow(
 
     os.makedirs(savedir, exist_ok=True)
 
-    #
-    # Stage 0: SNR enhancement
-    #
-    if do_enhance:
-        enh = enhance_selected_bins(image4d, index_sets, target_weights)
-        _maybe_write_debug(enh, "stage0", "00-enhanced.nii")
-        regor0 = enh
-    else:
-        regor0 = image4d
+    cur_img, cur_rbc, cur_mem, cur_clh = image4d, dp_rbc4d, dp_mem4d, clahe4d
+    cur_msk = None
+    transformations = []
 
-    img0, msk0, rbc0, mem0, clh0, T0 = register_groupwise(
-        image4d, regor0, dp_rbc4d, dp_mem4d, clahe4d,
-        os.path.join(savedir, "_elastix", "stage0"),
-        time_threshold = 1, cyclic = False, debug = debug,
-    )
-    _maybe_write_debug(msk0, "stage0", "00-mask.nii")
+    # Stage 0: SNR enhancement
+    if do_enhance or pad:
+        if do_enhance:
+            enh = enhance_selected_bins(cur_img, index_sets, target_weights)
+            _maybe_write_debug(enh, "stage0", "00-enhanced.nii")
+            guide = enh
+        else:
+            guide = cur_img
+        cur_img, cur_msk, cur_rbc, cur_mem, cur_clh, T = register_groupwise(
+            cur_img, guide, cur_rbc, cur_mem, cur_clh,
+            os.path.join(savedir, "_elastix", "stage0"),
+            time_threshold=1, cyclic=False, debug=debug, iterations=iterations,
+        )
+        _maybe_write_debug(cur_msk, "stage0", "00-mask.nii")
+        transformations.append(T)
 
-    #
-    # Stage 1: BM3D denoise
-    #
-    if do_denoise:
-        filt = create_bm3d_from_4d_image(img0)
-        _maybe_write_debug(filt, "stage1", "10-filtered.nii")
-        regor1 = filt
-    else:
-        regor1 = img0
+    # Stage 1: BM3D denoise
+    if do_denoise or pad:
+        if do_denoise:
+            filt = create_bm3d_from_4d_image(cur_img)
+            _maybe_write_debug(filt, "stage1", "10-filtered.nii")
+            guide = filt
+        else:
+            guide = cur_img
+        cur_img, cur_msk, cur_rbc, cur_mem, cur_clh, T = register_groupwise(
+            cur_img, guide, cur_rbc, cur_mem, cur_clh,
+            os.path.join(savedir, "_elastix", "stage1"),
+            time_threshold=1, cyclic=False, debug=debug, iterations=iterations,
+        )
+        _maybe_write_debug(cur_msk, "stage1", "10-mask.nii")
+        transformations.append(T)
 
-    img1, msk1, rbc1, mem1, clh1, T1 = register_groupwise(
-        img0, regor1, rbc0, mem0, clh0,
-        os.path.join(savedir, "_elastix", "stage1"),
-        time_threshold = 1, cyclic = False, debug = debug,
-    )
-    _maybe_write_debug(msk1, "stage1", "10-mask.nii")
+    # Stage 2: CLAHE
+    if do_clahe or pad:
+        if do_clahe:
+            _maybe_write_debug(cur_clh, "stage2", "20-clahe-input.nii")
+            guide = cur_clh
+        else:
+            guide = cur_img
+        cur_img, cur_msk, cur_rbc, cur_mem, cur_clh, T = register_groupwise(
+            cur_img, guide, cur_rbc, cur_mem, cur_clh,
+            os.path.join(savedir, "_elastix", "stage2"),
+            time_threshold=1, cyclic=False, debug=debug, iterations=iterations,
+        )
+        _maybe_write_debug(cur_msk, "stage2", "20-mask.nii")
+        transformations.append(T)
 
-    #
-    # Stage 2: CLAHE
-    #
-    if do_clahe:
-        _maybe_write_debug(clh1, "stage2", "20-clahe-input.nii")
-        regor2 = clh1
-    else:
-        regor2 = img1
-
-    img2, msk2, rbc2, mem2, clh2, T2 = register_groupwise(
-        img1, regor2, rbc1, mem1, clh1,
-        os.path.join(savedir, "_elastix", "stage2"),
-        time_threshold = 1, cyclic = False, debug = debug,
-    )
-    _maybe_write_debug(msk2, "stage2", "20-mask.nii")
-
-    #
-    # Stage 3: image‑as‑registeror
-    #
-    regor3 = img2 if do_image else img2
-
-    img3, msk3, rbc3, mem3, clh3, T3 = register_groupwise(
-        img2, regor3, rbc2, mem2, clh2,
+    # Stage 3: final image (always runs)
+    cur_img, cur_msk, cur_rbc, cur_mem, cur_clh, T = register_groupwise(
+        cur_img, cur_img, cur_rbc, cur_mem, cur_clh,
         os.path.join(savedir, "_elastix", "stage3"),
-        time_threshold = 1, cyclic = False, debug = debug,
+        time_threshold=1, cyclic=False, debug=debug, iterations=iterations,
     )
-    _maybe_write_debug(msk3, "stage3", "30-mask.nii")
+    _maybe_write_debug(cur_msk, "stage3", "30-mask.nii")
+    transformations.append(T)
 
-    final_img = sitk.Cast(img3, sitk.sitkFloat64)
-    final_rbc = sitk.Cast(rbc3, sitk.sitkFloat64)
-    final_mem = sitk.Cast(mem3, sitk.sitkFloat64)
-    final_clh = sitk.Cast(clh3, sitk.sitkFloat64)
+    final_img = sitk.Cast(cur_img, sitk.sitkFloat64)
+    final_rbc = sitk.Cast(cur_rbc, sitk.sitkFloat64)
+    final_mem = sitk.Cast(cur_mem, sitk.sitkFloat64)
+    final_clh = sitk.Cast(cur_clh, sitk.sitkFloat64)
 
     if save_intermediate:
         _save_channels(savedir,
-            gas=final_img, rbc=final_rbc, mem=final_mem, clahe=final_clh, mask=msk3)
+            gas=final_img, rbc=final_rbc, mem=final_mem, clahe=final_clh, mask=cur_msk)
 
     return {
         "resultImage4d":   final_img,
-        "resultMask4d":    msk3,
+        "resultMask4d":    cur_msk,
         "resultDpRbc4d":   final_rbc,
         "resultDpMem4d":   final_mem,
         "resultClahe4d":   final_clh,
-        "transformations": [T0, T1, T2, T3],
+        "transformations": transformations,
         "run_flags":       run_flags,
+        "pad":             pad,
     }
 
 
@@ -1259,6 +1268,9 @@ def _process_seven_block(args: dict) -> dict:
     dp_mem4d          = args["dp_mem4d"]
     clahe4d           = args["clahe4d"]
     save_intermediate = args["save_intermediate"]
+    run_flags         = args.get("run_flags", (1,1,1))
+    pad               = args.get("pad", False)
+    iterations        = args.get("iterations", None)
 
     os.makedirs(phase_dir, exist_ok=True)
 
@@ -1282,6 +1294,9 @@ def _process_seven_block(args: dict) -> dict:
         cyclic     = False,
         time_threshold = time_threshold,
         save_intermediate = save_intermediate,
+        run_flags  = run_flags,
+        pad        = pad,
+        iterations = iterations,
     )
 
     # ── Stage B: rebuild frames 4–6 by inserting average(0–3) ──
@@ -1306,6 +1321,9 @@ def _process_seven_block(args: dict) -> dict:
         cyclic     = False,
         time_threshold = time_threshold,
         save_intermediate = save_intermediate,
+        run_flags  = run_flags,
+        pad        = pad,
+        iterations = iterations,
     )
 
     # ── Stage C: warp back & splice into a 7-frame block ──
@@ -1343,6 +1361,9 @@ def _process_seven_block(args: dict) -> dict:
         cyclic     = False,
         time_threshold = time_threshold,
         save_intermediate = save_intermediate,
+        run_flags  = run_flags,
+        pad        = pad,
+        iterations = iterations,
     )
 
     out_img = res7["resultImage4d"]
@@ -1371,9 +1392,11 @@ def step_groupwise_registration(
     dp_mem4d: sitk.Image,
     clahe4d:  sitk.Image,
     savedir:  str,
-    run_flags: tuple[int,int,int,int] = (1,1,1,1),
+    run_flags: tuple[int,int,int] = (1,1,1),
+    pad: bool = False,
     save_intermediate: bool = True,
-    debug: bool = False
+    debug: bool = False,
+    iterations=None,
 ) -> dict:
     """
     Hierarchical groupwise PCA registration over 16 timepoints.
@@ -1414,6 +1437,9 @@ def step_groupwise_registration(
             "dp_mem4d":          blk_mem,
             "clahe4d":           blk_clh,
             "save_intermediate": save_intermediate,
+            "run_flags":         run_flags,
+            "pad":               pad,
+            "iterations":        iterations,
         })
 
     # Phase 1 + Phase 2 — independent 7-frame blocks, run in parallel.
@@ -1462,6 +1488,9 @@ def step_groupwise_registration(
         cyclic     = True,
         time_threshold = time_threshold,
         save_intermediate = save_intermediate,
+        run_flags  = run_flags,
+        pad        = pad,
+        iterations = iterations,
     )
     cleanup_elastix_temp_files(os.path.join(phase3_dir, "stageE_14frame_cyclic_PCA"))
 
@@ -1507,6 +1536,9 @@ def step_groupwise_registration(
         cyclic     = True,
         time_threshold = time_threshold,
         save_intermediate = save_intermediate,
+        run_flags  = run_flags,
+        pad        = pad,
+        iterations = iterations,
     )
     cleanup_elastix_temp_files(os.path.join(phase4_dir, "stageL_align_R8_R9"))
 
@@ -1559,6 +1591,9 @@ def step_groupwise_registration(
         cyclic         = True,
         time_threshold = time_threshold,
         save_intermediate = save_intermediate,
+        run_flags  = run_flags,
+        pad        = pad,
+        iterations = iterations,
     )
     cleanup_elastix_temp_files(os.path.join(savedir, "07_phase7_final16_PCA"))
 
@@ -1584,7 +1619,7 @@ def step_groupwise_registration(
 # def step_groupwise_registration(image, dp_rbc, dp_mem, savedir):
 #     """
 #     Perform the two-block (7+7) groupwise registration on gas+DP,
-#     merge into 14 frames, *then* insert two ‘middle’ frames to get 16,
+#     merge into 14 frames, *then* insert two 'middle' frames to get 16,
 #     and finally do a cyclic run on all 16.
 #     """
 #     # --- your existing 7+7 split & registration unchanged ---
@@ -1887,7 +1922,7 @@ def register_EI_ants(image3D, dp_rbc3D, dp_mem3D, refno, savedir):
     ants_rbcs  = [ants.from_numpy(sitk.GetArrayFromImage(r))   for r  in dp_rbc3D]
     ants_mems  = [ants.from_numpy(sitk.GetArrayFromImage(m))   for m  in dp_mem3D]
 
-    # 2) Resample fixed to “big_size” grid (for faster SyN)
+    # 2) Resample fixed to "big_size" grid (for faster SyN)
     big_size = 3  # tune as you like
     new_vox  = [1.0/big_size]*3
     original_spacing = ants_imgs[0].spacing
@@ -1952,54 +1987,61 @@ def register_EI_ants(image3D, dp_rbc3D, dp_mem3D, refno, savedir):
 
 
 def main():
-    # Read the initial
     image, dp_rbc, dp_mem, clahe = read_files(input_files)
 
-    s0  = time.time()
-    ################## CURRRENT REGISTRATION #########################################
-    final_registration_results = step_groupwise_registration(
-        image,
-        dp_rbc,
-        dp_mem,
-        clahe,
-        save_dir,
-        save_intermediate=True,   # set to False to skip per-step writes
-    )
-    #################################################################################
-    e0 = time.time()
+    base_dir = '/Volumes/HoomHamExt/Work/Analysis/2024-11-13_025JC/reg/ablation_500iter/'
 
-    ################## CURRRENT REGISTRATION #############
-    # unpack all four 4D results
-    image4D   = final_registration_results["resultImage4d"]
-    dp_rbc4D  = final_registration_results["resultDpRbc4d"]
-    dp_mem4D  = final_registration_results["resultDpMem4d"]
+    # 8 ablation runs — pad=True (fair, 4 regs) then pad=False (unfair, 2 regs)
+    runs = [
+        # flags        pad    subdir
+        # ((0, 0, 0),  True,  'pad_image_only'),  # image x3 + final
+        # ((1, 0, 0),  True,  'pad_enhance'),     # enhance + image + image + final
+        # ((0, 1, 0),  True,  'pad_denoise'),     # image + denoise + image + final
+        # ((0, 0, 1),  True,  'pad_clahe'),       # image + image + CLAHE + final
+        # ((1, 1, 1),  False, 'full'),            # enhance + denoise + CLAHE + final
+        # ((1, 0, 0),  False, 'npad_enhance'),    # enhance + final
+        # ((0, 1, 0),  False, 'npad_denoise'),    # denoise + final
+        # ((0, 0, 1),  False, 'npad_clahe'),      # CLAHE + final
+        ((0, 0, 0),  False,  'npad_image'),     # image + denoise + image + final
+    ]
 
-    # image4D = sitk.ReadImage('/Volumes/Macintosh HD 2/Work/Analysis/2024-11-17_005DS/reg/5000/ns_combined_image_groupwise.nii')
-    # clahe4D = sitk.ReadImage('/Volumes/Macintosh HD 2/Work/Analysis/2024-11-17_005DS/reg/5000/ns_combined_clahe_groupwise.nii')
-    # dp_rbc4D = sitk.ReadImage('/Volumes/Macintosh HD 2/Work/Analysis/2024-11-17_005DS/reg/5000/ns_combined_rbc_groupwise.nii')
-    # dp_mem4D = sitk.ReadImage('/Volumes/Macintosh HD 2/Work/Analysis/2024-11-17_005DS/reg/5000/ns_combined_mem_groupwise.nii')
+    for flags, pad, subdir in runs:
+        run_dir = os.path.join(base_dir, subdir, '')
+        print(f"\n=== {subdir} | flags={flags} pad={pad} ===")
 
-    print(f"Groupwise took {(e0 - s0)/60:.2f} minutes")
+        s0 = time.time()
+        results = step_groupwise_registration(
+            image, dp_rbc, dp_mem, clahe,
+            run_dir,
+            run_flags=flags,
+            pad=pad,
+            save_intermediate=False,
+        )
+        e0 = time.time()
+        print(f"Groupwise took {(e0-s0)/60:.2f} minutes")
 
-        # First ANTs pass: “original” → registered_orig.nii
-    s6 = time.time()
-    image3Dn  = extract_image_3d(image4D)
-    dp_rbc3Dn = extract_image_3d(dp_rbc4D)
-    dp_mem3Dn = extract_image_3d(dp_mem4D)
+        image4D  = results["resultImage4d"]
+        dp_rbc4D = results["resultDpRbc4d"]
+        dp_mem4D = results["resultDpMem4d"]
 
-    print('ANTs in progress…')
-    image3Dn, dp_rbc3Dn, dp_mem3Dn = register_EI_ants(
-        image3Dn, dp_rbc3Dn, dp_mem3Dn, refno, save_dir
-    )
-    image4Dn = join_image3d_ants(image3Dn)
-    rbc4Dn = join_image3d_ants(dp_rbc3Dn)
-    mem4Dn = join_image3d_ants(dp_mem3Dn)
+        s6 = time.time()
+        image3Dn  = extract_image_3d(image4D)
+        dp_rbc3Dn = extract_image_3d(dp_rbc4D)
+        dp_mem3Dn = extract_image_3d(dp_mem4D)
 
-    _save_channels(os.path.join(save_dir, "final_ants"),
-        gas=image4Dn, rbc=rbc4Dn, mem=mem4Dn)
+        print('ANTs in progress...')
+        image3Dn, dp_rbc3Dn, dp_mem3Dn = register_EI_ants(
+            image3Dn, dp_rbc3Dn, dp_mem3Dn, refno, run_dir
+        )
+        image4Dn = join_image3d_ants(image3Dn)
+        rbc4Dn   = join_image3d_ants(dp_rbc3Dn)
+        mem4Dn   = join_image3d_ants(dp_mem3Dn)
 
-    e6 = time.time()
-    print('Last EI Registration took', round((e6 - s6)/60, 2), 'minutes.')
+        _save_channels(os.path.join(run_dir, "final_ants"),
+            gas=image4Dn, rbc=rbc4Dn, mem=mem4Dn)
+
+        e6 = time.time()
+        print(f"ANTs took {(e6-s6)/60:.2f} minutes")
 
 if __name__ == "__main__":
     main()  
