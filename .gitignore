@@ -20,5 +20,14 @@ __pycache__/
 # Logs
 *.log
 
-# Workspace: helper scripts, analysis, tests, outputs (development only)
-workspace/
+# Workspace: tracked (canon 2026-07-12). Track md + scripts; ignore fat data/outputs.
+workspace/data/
+workspace/outputs/
+workspace/archive/**/*.nii
+workspace/archive/**/*.nii.gz
+workspace/**/*.png
+workspace/**/*.gif
+workspace/**/*.mp4
+workspace/**/*.avi
+workspace/**/nohup.out
+workspace/**/TransformParameters*.txt

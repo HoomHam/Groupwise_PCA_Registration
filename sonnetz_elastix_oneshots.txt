@@ -1,0 +1,556 @@
+ ▐▛███▜▌   Claude Code v2.1.202
+▝▜█████▛▘  Sonnet 5 · Claude Pro
+  ▘▘ ▝▝    ~/Hooman/Work/Codes/2026_PCA_registration
+
+ ▎ Fable 5 is back.
+ ▎ Until July 7, you can use up to 50% of your plan's weekly usage limit on Fable 5. If you hit your limit, you can continue on Fable 5 with usage credits. Fable 5 draws down usage faster than Opus 4.8. Learn more
+
+❯ /model                                                                        
+  ⎿  Set model to Sonnet 5 and saved as your default for new sessions
+
+❯ can you use register_elastix_oneshot on /Users/hoomham/Hooman/Work/Codes/2026 
+  _PCA_registration/workspace/data/recon/23.mat?                                
+
+  Listed 1 directory (ctrl+o to expand)
+
+⏺ File exist, script found. Check script's CLI/API shape.
+
+  Read 1 file, ran 2 shell commands (ctrl+o to expand)
+
+⏺ register_elastix_oneshot.py read_files() expects separate
+  rspace*/cspace*/dspace*.mat files (old rec/ format) — your 23.mat is a
+  different single-file recon format:
+
+  gas_phase (16,100,100,100), dissolved_phase_real/imag (16,100,100,100),
+  dissolved_phase_magnitude (16,100,100,100)
+
+  T-first axis, no cspace/clahe channel. Need adapter before I can run it. Few
+  decisions before wiring:
+
+⏺ User answered Claude's questions:
+  ⎿  · No clahe channel in 23.mat. What stand-in for clahe4d (4th warped 
+     channel)? → i want a single-shot and just based on image (no clahe, noise 
+     reduction or enhancement)
+     · Save output where? → /Users/hoomham/Hooman/Work/Codes/2026_PCA_registrati
+     on/workspace/outputs/registered
+     · Iterations / cyclic settings for this run — use script's current defaults
+     (500 iters, cyclic=True, run_flags=(0,0,0), pad=False → 1 Elastix pass) or
+     override? → Use current defaults (Recommended)
+
+⏺ Building adapter for this format (T-first axis, real/imag already split, no
+  clahe). Gas duplicated as internal 4th-channel placeholder since script's warp
+  step always touches 4 channels — but only gas/rbc/mem/jac get saved, so it's
+  a no-op on your output.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Write(workspace/helpers/scripts/run_elastix_oneshot_23.py)
+  ⎿  Wrote 87 lines to workspace/helpers/scripts/run_elastix_oneshot_23.py
+       1 """
+         gle-file
+       3 recon .mat (T-first axis, gas/dissolved_real/dissolved_imag keys
+       4 channel) instead of the rspace/cspace/dspace triplet format that
+       5 read_files() in workspace/helpers/tests/register_elastix_oneshot
+       6 
+       7 gas_phase is duplicated into the clh4d slot -- it's warped like 
+       8 channels internally but never saved, since run_flags=(0,0,0) mea
+         ns no
+      10 """
+     … +94 lines (ctrl+o to expand)
+
+  Ran 3 shell commands (ctrl+o to expand)
+
+⏺ Repo .venv has right deps. Kicking off the run in background — 16×100³, 500
+  iters, single pass, could take a bit.
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+⏺ Running, PID 54622, log empty yet (loading 265MB .mat). Poll for progress.
+
+⏺ Monitor(23.mat elastix oneshot registration progress/completion)
+  ⎿  Monitor started · task b3yf5ibae · persistent
+
+⏺ Adapter running (PID 54622), monitor armed for progress/errors — single
+  Elastix pass, gas/rbc/mem + jacobian output to
+  workspace/outputs/registered/23_oneshot/. Will report when it lands.
+
+✻ Cooked for 2m 10s
+
+⏺ Monitor event: "23.mat elastix oneshot registration progress/completion"
+
+  Listed 1 directory (ctrl+o to expand)
+
+⏺ Done. 2.5 min, single Elastix pass, no crash. Output at
+  workspace/outputs/registered/23_oneshot/: gas/rbc/mem.{nii,mat},
+  mask.{nii,mat}, jac_det/jac_cons/jac_from_EE.mat.
+
+✻ Crunched for 7s
+
+❯ can you generate a video from the results                                     
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ No existing video convention in repo. Quick call on what to render.
+
+⏺ User declined to answer questions
+  ⎿  · Which channel(s) for the video? (gas only (Recommended) / gas + rbc + mem
+     side by side / jac_det (Jacobian))
+     · Which slice/view? (Central axial slice (Recommended) / 3-plane 
+     (axial/coronal/sagittal))
+
+⏺ What's up with the slice question — want to clarify?
+
+✻ Worked for 20s
+
+❯ i think i did, continue                                                       
+
+  Searched for 1 pattern, ran 2 shell commands (ctrl+o to expand)
+
+⏺ Write(workspace/helpers/scripts/make_video_23.py)
+  ⎿  Wrote 46 lines to workspace/helpers/scripts/make_video_23.py
+       1 """
+       2 Render the registered gas-phase channel (central axial slice, 16
+          timepoints)
+         eg dep needed).
+       4 """
+       5 import os
+       6 import shutil
+       7 import subprocess
+       9 import scipy.io
+      10 import imageio.v3 as iio
+     … +41 lines (ctrl+o to expand)
+
+⏺ Running it now.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Video done: workspace/outputs/registered/23_oneshot/gas_axial.mp4 — registered
+  gas channel, central axial slice, 16 frames, 6fps, 400×400.
+
+✻ Brewed for 42s
+
+❯ oh i want two sagittal slices (not cenrral), one in right and one in left     
+  lung                                                                          
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+⏺ Can't reliably tell axis orientation (L-R vs A-P vs S-I) from raw array alone
+  — mask's near-uniform across all 100 x-indices, no anatomical landmark to key
+  off. Need actual slice indices.
+
+⏺ User answered Claude's questions:
+  ⎿  · gas.mat is (X,Y,Z,T)=(100,100,100,16), no orientation header. Which axis 
+     is sagittal (left-right) in this recon convention? → Not sure, show me a 
+     montage first
+
+⏺ Making a 3-orthogonal-view reference montage (mid-slice each axis, frame 0) so
+  you can identify which axis is sagittal.
+
+⏺ Write(workspace/helpers/scripts/orientation_montage_23.py)
+  ⎿  Wrote 45 lines to workspace/helpers/scripts/orientation_montage_23.py
+       1 """
+       2 Reference montage: mid-slice along each of the 3 spatial axes of
+       3 frame 0, to identify which axis is sagittal/coronal/axial by eye
+         .
+       4 """
+       6 import numpy as np
+       7 import scipy.io
+       8 import imageio.v3 as iio
+      10 REG_DIR = '/Users/hoomham/Hooman/Work/Codes/2026_PCA_registratio
+         n/workspace/outputs/registered/23_oneshot'
+     … +41 lines (ctrl+o to expand)
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Montage ready, take look.
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ X-axis (dim0) sagittal — left panel (fix X) sparse at center, matches anatomy
+  (mid-sagittal cuts between lungs, low signal). Middle panel (fix Y) shows two
+  separate lung lobes side by side. Confirms sagittal = fix X.
+
+  Finding two off-center X slices, one per lung, from signal profile.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Two lobes: X≈30 and X≈64 (valley at X≈50). Building two-panel sagittal video
+  (Y-Z plane) at those slices.
+⏺ Write(workspace/helpers/scripts/make_video_23_sagittal.py)
+  ⎿  Wrote 62 lines to workspace/helpers/scripts/make_video_23_sagittal.py
+       1 """
+       2 Two-panel sagittal video (Y-Z plane) from registered gas.mat, on
+       3 lung (fix X), across all 16 timepoints. X indices picked from a 
+         per-X
+       4 high-signal voxel-count profile: two lobes at X~30 and X~64, val
+       5 """
+       6 import os
+       7 import shutil
+       9 import numpy as np
+      10 import scipy.io
+     … +58 lines (ctrl+o to expand)
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Done: workspace/outputs/registered/23_oneshot/gas_sagittal_LR.mp4 — two panels
+  side by side, X=30 (left panel) and X=64 (right panel), 16 frames, 6fps.
+
+✻ Baked for 1m 24s
+
+❯ actully do more slices (like 6) and show another row of six slices for        
+  coronal                                                                       
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ 6 sagittal (fix X) + 6 coronal (fix Y) slices, evenly spaced across
+  lung-containing range. Building 2-row grid video.
+
+⏺ Write(workspace/helpers/scripts/make_video_23_grid.py)
+  ⎿  Wrote 93 lines to workspace/helpers/scripts/make_video_23_grid.py
+       1 """
+       2 2-row grid video from registered gas.mat:
+       3   row 1: 6 sagittal slices (fix X, Y-Z plane)
+       5 across all 16 timepoints. X/Y indices evenly spaced across each 
+         axis's
+       6 lung-containing signal range (from a per-slice high-signal voxel
+         -count
+       7 profile computed on frame 0).
+       9 import os
+      10 import shutil
+     … +91 lines (ctrl+o to expand)
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Done: gas_grid_sag_cor.mp4 — row1 sagittal X=[14,28,43,57,72,86], row2 coronal
+  Y=[40,49,58,68,77,86], 16 frames, 6fps.
+
+✻ Crunched for 37s
+
+❯ so in this case there was no iamge filtering used, right? jsut the image      
+  itself?                                                                       
+
+⏺ Right — two places, both raw:
+
+  Registration: run_flags=(0,0,0), pad=False → only stage3 (final) ran, guide =
+  cur_img itself (raw gas_phase from 23.mat). No enhance/BM3D-denoise/CLAHE
+  preprocessing touched it before Elastix saw it.
+
+  Video: just linear min-max normalize to 0-255 for display + nearest-neighbor
+  upscale. No smoothing/filtering on the pixel values themselves.
+
+✻ Brewed for 6s
+
+❯ and also there was no ANTs at the end?                                        
+
+⏺ Right — no ANTs. That's a separate final step (register_EI_ants()) in the main
+  pipeline script (register_groupwise_PCA_step.py), not in
+  register_elastix_oneshot.py. This run only used register_elastix_oneshot.py —
+  pure Elastix/PCAMetric2 groupwise, single pass, no ANTs EI step tacked on.
+
+✻ Churned for 4s
+
+❯ can you write another register_elastix_oneshot.py that just does that (so no  
+  filteringm no ANTs, and jsut the gas phase). i mean remove everyhting that is 
+  unnecessary to generate the same resutls (wihout the flagging [0 0 0]         
+  required. so jsut a bareboen groupwise elastix but keep the paparms of        
+  registratoin the same (also no calhe input)                                   
+
+⏺ Writing a minimal single-file version — gas phase only, no rbc/mem/clahe, no
+  flag/stage system, no ANTs. Same PCAMetric2 groupwise param map (cyclic, 500
+  iters, PCAMetric2, mask logic) as the run you already did.
+
+⏺ Write(workspace/helpers/scripts/register_elastix_oneshot_gas.py)
+  ⎿  Wrote 187 lines to
+     workspace/helpers/scripts/register_elastix_oneshot_gas.py
+       1 import os
+       2 import shutil
+       3 import time
+       5 import SimpleITK as sitk
+       6 import scipy.io
+       7 from scipy.ndimage import label
+       8 
+       9 INPUT_MAT = '/Users/hoomham/Hooman/Work/Codes/2026_PCA_registrat
+      10 SAVE_DIR  = '/Users/hoomham/Hooman/Work/Codes/2026_PCA_registrat
+         ion/workspace/outputs/registered/23_gasonly/'
+     … +193 lines (ctrl+o to expand)
+
+⏺ Wrote workspace/helpers/scripts/register_elastix_oneshot_gas.py. Gas-phase
+  only, no clahe/rbc/mem, no run_flags/pad/stage system, no ANTs — single
+  Elastix PCAMetric2 groupwise pass, same param map/mask logic/cyclic/500 iters
+  as before. Want me to run it now to confirm it reproduces the same result?
+
+✻ Sautéed for 51s
+
+❯ can you now run the gas only one shot you wrtote on 49.mat in data/recon      
+
+  Listed 1 directory, ran 1 shell command (ctrl+o to expand)
+
+⏺ Same format, gas_phase (16,100,100,100). Updating INPUT_MAT/SAVE_DIR and
+  running.
+
+⏺ Update(workspace/helpers/scripts/register_elastix_oneshot_gas.py)  ⎿  Added 2 lines, removed 2 lines
+       6  import scipy.io
+       7  from scipy.ndimage import label
+       8  
+       9 -INPUT_MAT = '/Users/hoomham/Hooman/Work/Codes/2026_PCA_registra
+         -tion/workspace/data/recon/23.mat'                              
+      10 -SAVE_DIR  = '/Users/hoomham/Hooman/Work/Codes/2026_PCA_registra
+         -tion/workspace/outputs/registered/23_gasonly/'                 
+       9 +INPUT_MAT = '/Users/hoomham/Hooman/Work/Codes/2026_PCA_registra
+         +tion/workspace/data/recon/49.mat'                              
+      10 +SAVE_DIR  = '/Users/hoomham/Hooman/Work/Codes/2026_PCA_registra
+         +tion/workspace/outputs/registered/49_gasonly/'                 
+      11  
+      12  CYCLIC     = True
+      13  ITERATIONS = 500
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Monitor(49.mat gas-only elastix oneshot progress/completion)
+  ⎿  Monitor started · task b3h7w1t8b · persistent
+
+⏺ Running (PID 63473), output → workspace/outputs/registered/49_gasonly/.
+  Monitor armed, report when done.
+
+✻ Crunched for 23s
+
+⏺ Monitor event: "49.mat gas-only elastix oneshot progress/completion"
+
+  Listed 1 directory (ctrl+o to expand)
+
+⏺ Done, 2.4 min. Output at workspace/outputs/registered/49_gasonly/:
+  gas.{mat,nii}, mask.mat, jac_det/jac_cons/jac_from_EE.mat.
+
+✻ Baked for 6s
+
+❯ i need the videos the smae way as the 23 last figure                          
+
+⏺ Generalizing the grid-video script to take a case directory + auto-pick 6
+  slices per axis from the signal profile (same method used for 23), then
+  running it on 49_gasonly.
+
+⏺ Write(workspace/helpers/scripts/make_video_grid.py)
+  ⎿  Wrote 106 lines to workspace/helpers/scripts/make_video_grid.py
+       1 """
+       2 2-row grid video from a registered gas.mat:
+       4   row 2: 6 coronal slices  (fix Y, X-Z plane)
+       5 across all timepoints. X/Y indices auto-picked as 6 evenly space
+         d points
+         ce
+       7 high-signal voxel-count profile on frame 0 (profile >= 15% of it
+         s peak).
+       9 Usage: make_video_grid.py <reg_dir>
+      10   <reg_dir> must contain gas.mat with array shape (X, Y, Z, T).
+     … +102 lines (ctrl+o to expand)
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Edge picks (X=1,99) look off — check the raw profile for 49 before trusting
+  it.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Update(workspace/helpers/scripts/make_video_grid.py)
+  ⎿  Added 3 lines, removed 3 lines
+      23  N_SLICES = 6
+      24  
+      25  
+      26 -def pick_slices(profile, n=N_SLICES, frac=0.15):               
+      27 -    valid = np.where(profile >= frac * profile.max())[0]       
+      28 -    lo, hi = valid.min(), valid.max()                          
+      26 +def pick_slices(axis_len, n=N_SLICES, central_frac=0.8):       
+      27 +    margin = (1 - central_frac) / 2                            
+      28 +    lo, hi = margin * (axis_len - 1), (1 - margin) * (axis_len 
+         +- 1)                                                           
+      29      return sorted(set(int(round(x)) for x in np.linspace(lo, hi
+          , n)))
+      30  
+      31  
+
+⏺ Now fix the caller to use array length instead of the noisy signal profile.
+
+⏺ Update(workspace/helpers/scripts/make_video_grid.py)
+  ⎿  Added 2 lines, removed 5 lines
+      60      d = scipy.io.loadmat(os.path.join(reg_dir, 'gas.mat'))
+      61      gas = d['gas']   # (X, Y, Z, T)
+      62      T = gas.shape[3]
+      63 -    frame0 = gas[:, :, :, 0]                                   
+      63  
+      65 -    sig_x = (frame0 > np.percentile(frame0, 90)).sum(axis=(1, 2
+         -))                                                             
+      66 -    sig_y = (frame0 > np.percentile(frame0, 90)).sum(axis=(0, 2
+         -))                                                             
+      67 -    x_slices = pick_slices(sig_x)                              
+      68 -    y_slices = pick_slices(sig_y)                              
+      64 +    x_slices = pick_slices(gas.shape[0])                       
+      65 +    y_slices = pick_slices(gas.shape[1])                       
+      66  
+      67      lo, hi = gas.min(), gas.max()
+      68      os.makedirs(frame_dir, exist_ok=True)
+
+⏺ Rerunning for both 49 and 23 with fixed logic (central 80% of FOV, evenly
+  spaced).
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Both regenerated. Sagittal/coronal slices X=Y=[10,26,42,57,73,89] (central 80%
+  of FOV, evenly spaced), same 2-row grid style as before.
+
+  - workspace/outputs/registered/49_gasonly/gas_grid_sag_cor.mp4
+  - workspace/outputs/registered/23_oneshot/gas_grid_sag_cor.mp4 (overwrote
+  earlier version — now consistent slice logic across both)
+
+✻ Sautéed for 1m 6s
+
+※ recap: Ran gas-only Elastix oneshot registration on 23.mat and 49.mat, then generated matching sagittal/coronal grid videos for both. Both videos done and saved — nothing pending, just say if you want another case run. (disable recaps in /config)
+
+❯ ok now can you make a version that does the orchestration of every-4 and sum  
+  and do the next 4 from both side and then doing the 16 all together but       
+  remove al lthe filterings (noise, calhe, enhance) and applying on dissovle    
+  (so no dissolve)                                                              
+
+  Read 1 file, ran 5 shell commands (ctrl+o to expand)
+⏺ Now writing the gas-only hierarchical script, reusing the existing
+  splice/average/transform helpers from the main pipeline module (all
+  channel-agnostic) rather than reimplementing them.
+
+⏺ Write(workspace/helpers/scripts/register_hierarchical_gasonly.py)
+  ⎿  Wrote 150 lines to
+     workspace/helpers/scripts/register_hierarchical_gasonly.py
+       1 """
+         ly.
+       4 Reproduces the 4->7->14->16 orchestration from step_groupwise_re
+         gistration()
+         moved
+         hase
+         iginal
+       8 would run through orchestrate_registration_workflow() with run_f
+       9 pad=False collapses to exactly one register_groupwise() call (gu
+      10 itself), so this script calls that single-stage form directly.
+     … +168 lines (ctrl+o to expand)
+
+⏺ Quick import sanity check before the full run (importing the pipeline module
+  directly is new).
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Import clean. Launching the full hierarchical run (9 registrations total: 2×3
+  per-block + combine14 + midpoint + final16) in background.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Monitor(hierarchical gas-only 23.mat registration progress/completion)
+  ⎿  Monitor started · task b9yu7lpn5 · persistent
+
+⏺ Running (PID 69207), monitor armed. Report back when done or if it hits an
+  error (e.g. the known PCAMetric2 "samples outside buffer" crash on small
+  volumes).
+
+✻ Cooked for 3m 26s
+
+※ recap: Registering lung MRI frames on 23.mat with a new gas-only hierarchical 4→7→14→16 script (no filtering, no dissolved channels). It's running in the background now; next step is checking results once it finishes. (disable recaps in /config)
+
+⏺ Monitor event: "hierarchical gas-only 23.mat registration progress/completion"
+
+  Listed 1 directory (ctrl+o to expand)
+
+⏺ Done, ~10 min, all 7 phases completed clean (no crashes). Output:
+  workspace/outputs/registered/23_hierarchical_gasonly/gas.{mat,nii} + mask.mat.
+  Want the same sagittal/coronal grid video generated for this one too?
+
+✻ Worked for 10s
+
+❯ yes to videos                                                                 
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Done:
+  workspace/outputs/registered/23_hierarchical_gasonly/gas_grid_sag_cor.mp4 —
+  same slice picks/style as the oneshot version (X=Y=[10,26,42,57,73,89]).
+
+✻ Baked for 15s
+
+※ recap: Building gas-phase-only registration scripts/videos for the PCA lung MRI pipeline (23.mat, 49.mat). Just finished the hierarchical 4→7→14→16 gas-only run on 23.mat and its sagittal/coronal grid video — next: run same hierarchical version on 49.mat if wanted. (disable recaps in /config)
+
+❯ /handoff update the root handoff and write a new handoff for workspace with   
+the deatil of what you did and where what went                                  
+
+  Read 1 file, ran 1 shell command (ctrl+o to expand)
+⏺ Checking actual output state before writing the handoff so I don't misreport
+  what ran vs what didn't.
+
+  Read 1 file, ran 1 shell command (ctrl+o to expand)
+
+⏺ Now updating the root handoff (in place, pointer-only — full detail goes to
+  the new workspace handoff).
+
+⏺ Update(handoff-report.md)
+  ⎿  Added 18 lines
+       3  
+       4  ---
+       5  
+       6 +## Update — 2026-07-06 session (see `workspace/handoff-report.m
+         +d` for full detail)                                            
+       7 +                                                               
+       8 +Quiver-plot task below is still **not started** — this session 
+         +went a different                                               
+       9 +direction: adapted the oneshot/hierarchical registration script
+         +s to a newer                                                   
+      10 +single-file recon `.mat` format (`workspace/data/recon/{23,49}.
+         +mat`, keys                                                     
+      11 +`gas_phase`/`dissolved_phase_real`/`dissolved_phase_imag`, T-fi
+         +rst axis, no                                                   
+      12 +CLAHE channel), wrote a bare-bones gas-only oneshot script, wro
+         +te a bare-bones                                                
+      13 +gas-only version of the full 4→7→14→16 hierarchical pipeline, a
+         +nd built a                                                     
+      14 +reusable sagittal/coronal grid-video renderer. All new scripts 
+         +and outputs                                                    
+      15 +live under `workspace/` (gitignored) — none of the root-level p
+         +ipeline files                                                  
+      16 +(`register_groupwise_PCA_step.py`, `register_elastix_oneshot.py
+         +`) were                                                        
+      17 +modified, only imported/read.                                  
+      18 +                                                               
+      19 +Full session narrative, decisions, file index, and next-step su
+         +ggestions:                                                     
+      20 +`workspace/handoff-report.md`.                                 
+      21 +                                                               
+      22 +---                                                            
+      23 +                                                               
+      24  ## What Was Done This Session
+      25  
+      26  ### 1. Verified parameter parity between stepwise and oneshot E
+          lastix scripts
+
+⏺ Now writing the detailed workspace handoff.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Write(workspace/handoff-report.md)
+  ⎿  Wrote 212 lines to workspace/handoff-report.md
+       1 # Workspace Handoff — 2026-07-06/07
+         l scripts + grid videos
+       3 
+       4 ---
+       6 ## Context / trigger
+       7 
+         ndoff-report.md`
+       9 2026-06-03 entry). User asked to run it on `workspace/data/recon
+         /23.mat` — a
+         at script
+     … +330 lines (ctrl+o to expand)
+
+⏺ Both done:
+
+  - Root handoff-report.md — updated in place, short pointer entry added
+  (2026-06-03 doc kept, quiver-plot task still open, notes this session went a
+  different direction and points to workspace doc).
+  - Workspace workspace/handoff-report.md — new, full detail: recon format,
+  axis-orientation derivation, all 8 scripts (which are superseded vs.
+  canonical), the register_hierarchical_gasonly.py design + two pipeline quirks
+  found (dead cyclic param, missing SetOutputDirectory), all 3 runs with output
+  dirs/timings, open items, suggested skills.
+
+  Ready for a fresh session.
+
+✻ Worked for 8m 39s
