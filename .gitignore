@@ -20,14 +20,6 @@ __pycache__/
 # Logs
 *.log
 
-# Workspace: tracked (canon 2026-07-12). Track md + scripts; ignore fat data/outputs.
-workspace/data/
-workspace/outputs/
-workspace/archive/**/*.nii
-workspace/archive/**/*.nii.gz
-workspace/**/*.png
-workspace/**/*.gif
-workspace/**/*.mp4
-workspace/**/*.avi
-workspace/**/nohup.out
-workspace/**/TransformParameters*.txt
+# workspace/ = its OWN repo (two-repo law 2026-07-17, supersedes 2026-07-12 tracked-in-root):
+# HoomHam/pca-registration-workspace (private). This root repo is PUBLIC — workspace never returns here.
+workspace/
