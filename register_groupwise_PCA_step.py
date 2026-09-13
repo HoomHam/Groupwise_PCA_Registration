@@ -452,7 +452,7 @@ def register_groupwise(
 
     parameterMap['SubtractMean'] = ['true']
     parameterMap['MovingImageDerivativeScales'] = ['1','1','1','0']
-    parameterMap['(FinalGridSpacingInPhysicalUnits'] = ['6']
+    parameterMap['FinalGridSpacingInPhysicalUnits'] = ['6']   # F41 fix 2026-09-12: key had a stray '(' and was silently ignored
     
     # Optimizer Setting
     parameterMap['NumberOfResolutions'] = ['4']
